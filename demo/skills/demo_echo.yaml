@@ -1,0 +1,25 @@
+name: demo_echo
+description: |
+  Sanity-check skill for the rust-demo upstream. Calls `echo` and reports
+  back. Use it as a smoke test for the prompts surface; mirrors the kind of
+  playbook operators write for real upstreams (jira_issue_work, etc).
+
+arguments:
+  - name: message
+    required: true
+    description: Text to echo back.
+
+template: |
+  Execute the demo echo skill. Call `query_graphql` with this query:
+
+  ```graphql
+  {
+    result: rustDemo {
+      echo(message: "{{message}}") {
+        text
+      }
+    }
+  }
+  ```
+
+  Return the `text` field from the response to the user verbatim.

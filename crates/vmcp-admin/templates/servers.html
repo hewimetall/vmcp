@@ -1,0 +1,31 @@
+{% extends "layout.html" %}
+{% block title %}Servers{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="card-header"><h2 class="card-title">Upstream MCP servers</h2></div>
+  <div class="card-body">
+    <p class="text-muted">Pulled live from the running pool. Click a row to drill into its tools.</p>
+    <div id="servers-grid"></div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+new gridjs.Grid({
+  columns: [
+    { name: 'Name', formatter: (n) => gridjs.html(`<a href="/admin/servers/${encodeURIComponent(n)}">${n}</a>`) },
+    'Description',
+    { name: 'Tools', width: '80px' },
+    { name: 'Read-only', width: '110px' },
+    { name: 'Connected', width: '110px', formatter: (v) => v ? '✓' : '×' },
+  ],
+  server: {
+    url: '/admin/api/servers',
+    then: (data) => data.servers.map((s) => [s.name, s.description ?? '', s.tool_count, s.read_only_count, s.connected]),
+  },
+  search: true,
+  resizable: true,
+  className: { table: 'table table-striped' },
+}).render(document.getElementById('servers-grid'));
+</script>
+{% endblock %}

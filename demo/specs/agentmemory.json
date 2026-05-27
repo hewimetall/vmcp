@@ -1,0 +1,12 @@
+{
+  "server": "agentmemory",
+  "tools": [
+    { "name": "memory_recall",             "read_only": true  },
+    { "name": "memory_smart_search",       "read_only": true  },
+    { "name": "memory_sessions",           "read_only": true  },
+    { "name": "memory_export",             "read_only": true  },
+    { "name": "memory_audit",              "read_only": true  },
+    { "name": "memory_save",               "read_only": false },
+    { "name": "memory_governance_delete",  "read_only": false }
+  ]
+}

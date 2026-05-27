@@ -1,0 +1,26 @@
+{% extends "layout.html" %}
+{% block title %}Sessions{% endblock %}
+{% block content %}
+<div class="page-header"><h2 class="page-title">Sessions</h2></div>
+<div id="sessions-grid"></div>
+<div id="session-detail" class="card mt-3 d-none">
+  <div class="card-header">
+    <h3 class="card-title" id="session-detail-title">—</h3>
+    <div class="card-actions">
+      <button class="btn btn-sm" id="live-toggle">▶ Resume live</button>
+      <a class="btn btn-sm" id="export-link" href="#">⬇ Export .jsonl</a>
+      <a class="btn btn-sm btn-primary" id="compare-link" href="#">📊 Compare with…</a>
+    </div>
+  </div>
+  <div class="card-body">
+    <div id="dump-grid"></div>
+    <div class="row mt-3">
+      <div class="col"><h5>Request</h5><pre id="req-panel" class="mb-0">—</pre></div>
+      <div class="col"><h5>Response</h5><pre id="resp-panel" class="mb-0">—</pre></div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/admin/static/sessions.js"></script>
+{% endblock %}

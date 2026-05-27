@@ -1,0 +1,15 @@
+# Rust build artifacts
+target/
+target-docker/
+**/*.rs.bk
+
+# Generated lock files for working state
+tools.lock.json
+tools.lock.json.bak
+tools.lock.json.tmp
+
+# OS / editor cruft
+.DS_Store
+.idea/
+.vscode/
+*.swp

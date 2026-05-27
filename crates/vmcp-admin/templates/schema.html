@@ -1,0 +1,22 @@
+{% extends "layout.html" %}
+{% block title %}Schema{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">GraphQL semantic layer (SDL)</h2>
+    <div class="card-actions">
+      <a class="btn btn-outline-primary" href="/admin/api/schema.graphql" download="vmcp.graphql">Download</a>
+    </div>
+  </div>
+  <div class="card-body">
+    <pre id="sdl" style="max-height: 70vh; overflow: auto;">Loading…</pre>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+fetch('/admin/api/schema.graphql').then(r => r.text()).then((sdl) => {
+  document.getElementById('sdl').textContent = sdl;
+});
+</script>
+{% endblock %}

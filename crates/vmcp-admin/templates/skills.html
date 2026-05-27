@@ -1,0 +1,63 @@
+{% extends "layout.html" %}
+{% block title %}Skills{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="card-header d-flex align-items-center">
+    <h2 class="card-title">Skills (MCP prompts)</h2>
+    <div class="ms-auto">
+      <button class="btn btn-primary" id="new-skill-btn">+ New skill</button>
+    </div>
+  </div>
+  <div class="card-body">
+    <p class="text-muted">
+      Operator-authored playbooks loaded from <code>skills_dir</code>.
+      Exposed to MCP clients via <code>prompts/list</code> and
+      <code>prompts/get</code>. Changes via this UI take effect immediately;
+      a restart only matters for static-config reloads.
+    </p>
+    <div id="skills"></div>
+  </div>
+</div>
+
+<!-- New/Edit skill modal (Tabler) -->
+<div class="modal" id="skill-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="skill-modal-title">New skill</h5>
+        <button type="button" class="btn-close" id="skill-modal-close" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="skill-modal-mode" value="new">
+        <input type="hidden" id="skill-modal-original-name" value="">
+        <div class="mb-3">
+          <label class="form-label">Name</label>
+          <input type="text" class="form-control" id="skill-modal-name" placeholder="e.g. summarize_thread">
+          <small class="form-hint">Identifier — letters, numbers, underscores, dashes.</small>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Description</label>
+          <input type="text" class="form-control" id="skill-modal-description" placeholder="One-line description shown to MCP clients">
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Arguments</label>
+          <div id="skill-modal-args"></div>
+          <button type="button" class="btn btn-sm btn-outline-primary mt-2" id="skill-modal-add-arg">+ Add argument</button>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Template</label>
+          <textarea class="form-control" id="skill-modal-template" rows="10" placeholder="Handlebars-style {% raw %}{{argument}}{% endraw %} interpolation"></textarea>
+        </div>
+        <div class="alert alert-danger d-none" id="skill-modal-error"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn me-auto" id="skill-modal-cancel">Cancel</button>
+        <button type="button" class="btn btn-primary" id="skill-modal-save">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/admin/static/skills.js"></script>
+{% endblock %}

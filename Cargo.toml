@@ -1,0 +1,87 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/vmcp",
+    "crates/vmcp-config",
+    "crates/vmcp-registry",
+    "crates/vmcp-upstream",
+    "crates/vmcp-notify",
+    "crates/vmcp-graphql",
+    "crates/vmcp-auth",
+    "crates/vmcp-server",
+    "crates/vmcp-admin",
+]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.80"
+license = "Apache-2.0"
+repository = "https://github.com/derty/codefest2026vmcp"
+
+[workspace.dependencies]
+# MCP — official Rust SDK. Client+server, stdio+streamable-http transports, child-process transport for upstream pool.
+rmcp = { version = "1", features = [
+    "server",
+    "client",
+    "transport-io",
+    "transport-streamable-http-server",
+    "transport-child-process",
+    "macros",
+] }
+
+# GraphQL — dynamic schema (we build it from upstream tools/list at runtime).
+async-graphql = { version = "7", features = ["dynamic-schema"] }
+
+# HTTP server
+axum = { version = "0.7", features = ["macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+hyper = "1"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+
+# Concurrency primitives
+dashmap = "6"
+arc-swap = "1.7"
+parking_lot = "0.12"
+
+# Serde + JSON
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Config
+figment = { version = "0.10", features = ["toml", "env"] }
+toml = "0.8"
+serde_yaml = "0.9"
+
+# Templating — skills body rendering. Strict-mode only, no custom helpers.
+handlebars = { version = "5", default-features = false }
+
+# Auth
+jsonwebtoken = "9"
+argon2 = "0.5"
+subtle = "2"
+rand = "0.8"
+askama = "0.12"
+
+# Utility
+anyhow = "1"
+thiserror = "2"
+regex = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+url = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+schemars = "0.8"
+clap = { version = "4", features = ["derive", "env"] }
+percent-encoding = "2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

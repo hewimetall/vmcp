@@ -1,0 +1,58 @@
+name: memory_recall
+description: |
+  Recall past agent observations from agentmemory by a topic query. Use when
+  the user asks "what did we figure out about X", "how was Y handled before",
+  "did we make a decision on Z", or otherwise needs to surface prior
+  context. Cheaper than re-deriving the answer from code, faster than
+  searching session transcripts.
+
+arguments:
+  - name: query
+    required: true
+    description: |
+      Free-text topic to search past memories for. Keywords, file paths,
+      concept names. Token-level match — pick descriptive words, no fuzzy
+      synonyms.
+  - name: limit
+    required: false
+    description: |
+      Max hits to return. Use 5 for narrow lookups, 10 (default) for
+      normal recall, 20+ only when the topic is broad and you need full
+      breadth.
+  - name: format
+    required: false
+    description: |
+      Result shape: `compact` (default — one-line per hit, smallest
+      token cost), `full` (each observation with metadata), `narrative`
+      (LLM-stitched summary across hits).
+
+template: |
+  Recall past agent-memory observations matching the user's topic. Call
+  `query_graphql` with this single document:
+
+  ```graphql
+  {
+    result: agentmemory {
+      memoryRecall(query: "{{query}}", limit: {{#if limit}}{{limit}}{{else}}10{{/if}}, format: "{{#if format}}{{format}}{{else}}compact{{/if}}") {
+        json
+        text
+        isError
+      }
+    }
+  }
+  ```
+
+  Handling the response:
+
+  - If `result.memoryRecall.isError` is true, surface the `text` field as
+    an error message to the user — do not silently retry, the upstream
+    already exhausted its own retries.
+  - `result.memoryRecall.json` is the structured payload: usually an
+    array of observations with `concepts`, `files`, `type`, `content`,
+    and a session pointer. Use it as ground truth — `text` is just a
+    human-readable mirror.
+  - Summarise the top hits to the user in their own language. For each
+    hit cite the `concepts` and `files` so they know which past work
+    you're pulling from. Do not paste raw JSON unless they ask.
+  - If `json` is empty, say so plainly ("no prior observations match
+    {{query}}") — do not paraphrase the empty result into a fake one.

@@ -1,0 +1,62 @@
+{% extends "layout.html" %}
+{% block title %}Compare sessions{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h2 class="page-title">Compare sessions</h2>
+  <div class="text-muted">Side-by-side dump of two MCP sessions. URL params: <code>?a=cid:sid&amp;b=cid:sid</code>. If omitted, the two most recently active sessions are picked.</div>
+</div>
+
+<div class="row mb-3">
+  <div class="col-md-6">
+    <label class="form-label">Session A</label>
+    <select id="picker-a" class="form-select"></select>
+  </div>
+  <div class="col-md-6">
+    <label class="form-label">Session B</label>
+    <select id="picker-b" class="form-select"></select>
+  </div>
+</div>
+
+<div class="row mb-3">
+  <div class="col">
+    <button id="load-btn" class="btn btn-primary">Load &amp; compare</button>
+    <button id="swap-btn" class="btn">Swap A ↔ B</button>
+    <span id="status" class="ms-3 text-muted"></span>
+  </div>
+</div>
+
+<div id="summary" class="row mb-3"></div>
+
+<div class="row">
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-header"><h3 class="card-title" id="title-a">Session A</h3></div>
+      <div class="card-body">
+        <div id="grid-a"></div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="card">
+      <div class="card-header"><h3 class="card-title" id="title-b">Session B</h3></div>
+      <div class="card-body">
+        <div id="grid-b"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row mt-3" id="exchange-panels" style="display:none">
+  <div class="col-md-6">
+    <h5>A · request</h5><pre id="req-a" class="mb-2">—</pre>
+    <h5>A · response</h5><pre id="resp-a" class="mb-0">—</pre>
+  </div>
+  <div class="col-md-6">
+    <h5>B · request</h5><pre id="req-b" class="mb-2">—</pre>
+    <h5>B · response</h5><pre id="resp-b" class="mb-0">—</pre>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/admin/static/compare.js"></script>
+{% endblock %}

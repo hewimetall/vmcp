@@ -1,0 +1,70 @@
+name: memory_save
+description: |
+  Persist an important insight, decision, or pattern to agentmemory so
+  future sessions can recall it via `memory_recall`. Use when the user
+  says "remember this", "save this decision", "log that we settled on
+  X", or when a non-obvious workflow / architectural pattern just got
+  resolved and would be wasteful to re-derive next time.
+
+arguments:
+  - name: content
+    required: true
+    description: |
+      The actual insight to remember, in one self-contained sentence or
+      paragraph. Future-you will see this verbatim — write it so it's
+      interpretable without the current conversation as context.
+  - name: type
+    required: true
+    description: |
+      Memory class. One of: `pattern` (recurring code/process shape),
+      `preference` (user's stated preference), `architecture` (design
+      decision), `bug` (root-cause of a fixed defect), `workflow`
+      (operational procedure), `fact` (raw factual datum). Pick the
+      narrowest that fits — used downstream for filtering recall.
+  - name: concepts
+    required: true
+    description: |
+      Comma-separated keywords that future searches will use to find
+      this memory. Include the domain words (`graphql`, `oauth`,
+      `pkce`), the actors (`vmcp`, `agentmemory`), and the situation
+      (`token-expiry`, `consent-flow`). 3–8 concepts is the sweet spot.
+  - name: files
+    required: false
+    description: |
+      Optional comma-separated paths of source files this memory is
+      grounded in. Cross-cutting decisions can skip this — but prefer to
+      cite at least one path when you can, it makes the hit easier to
+      verify later.
+
+template: |
+  Persist this insight to long-term agent memory. Because writes go through
+  the Mutation namespace, use a `mutation` document — not a `query`:
+
+  ```graphql
+  mutation {
+    result: agentmemory {
+      memorySave(
+        content: "{{content}}",
+        type: "{{type}}",
+        concepts: "{{concepts}}"{{#if files}},
+        files: "{{files}}"{{/if}}
+      ) {
+        json
+        text
+        isError
+      }
+    }
+  }
+  ```
+
+  Handling the response:
+
+  - If `result.memorySave.isError` is true, report the `text` field to
+    the user verbatim — don't pretend the save succeeded. Memories that
+    failed to persist are worse than no memory at all because the user
+    will assume recall will work later.
+  - On success, `json` contains the assigned memory ID. Surface it to
+    the user — they may want it for `memory_governance_delete` later.
+  - Do NOT chain a `memory_recall` to "verify" the save — agentmemory is
+    write-acknowledged synchronously, the extra round-trip just burns
+    tokens.

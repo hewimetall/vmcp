@@ -1,0 +1,24 @@
+{
+  "upstreams": [
+    {
+      "name": "rust-demo",
+      "description": "Demo upstream — sanity tools: echo, add, system_info, random_uuid",
+      "command": "cargo",
+      "args": ["run", "--release", "--quiet", "-p", "rust-demo-mcp"],
+      "env": {},
+      "enabled": true,
+      "sidecar_spec": "specs/rust-demo.json"
+    },
+    {
+      "name": "agentmemory",
+      "description": "Agent memory engine (rohitg00/agentmemory v0.9.22): smart search, recall/save, sessions, audit, governance-delete. Standalone fallback uses InMemoryKV — set AGENTMEMORY_URL to a running agentmemory daemon for SQLite persistence.",
+      "command": "npx",
+      "args": ["-y", "@agentmemory/mcp"],
+      "env": {
+        "AGENTMEMORY_PROBE_TIMEOUT_MS": "200"
+      },
+      "enabled": true,
+      "sidecar_spec": "specs/agentmemory.json"
+    }
+  ]
+}

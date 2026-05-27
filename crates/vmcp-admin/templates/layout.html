@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>vmcp admin — {% block title %}{% endblock %}</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/core@1/dist/css/tabler.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2/tabler-icons.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/gridjs@6/dist/theme/mermaid.min.css">
+  <style>
+    .container-xl { padding-top: 1.5rem; }
+    pre { white-space: pre-wrap; word-break: break-word; }
+  </style>
+</head>
+<body>
+<header class="navbar navbar-expand-md navbar-light d-print-none">
+  <div class="container-xl">
+    <h1 class="navbar-brand"><a href="/admin">vmcp admin</a></h1>
+    <nav class="navbar-nav flex-row">
+      <a class="nav-link px-2" href="/admin">Servers</a>
+      <a class="nav-link px-2" href="/admin/schema">Schema</a>
+      <a class="nav-link px-2" href="/admin/skills">Skills</a>
+      <a class="nav-link px-2" href="/admin/notifications">Notifications</a>
+      <a class="nav-link px-2" href="/admin/sessions">Sessions</a>
+      <a class="nav-link px-2" href="/admin/compare">Compare</a>
+    </nav>
+  </div>
+</header>
+<main class="page-wrapper">
+  <div class="container-xl">
+    {% block content %}{% endblock %}
+  </div>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/gridjs@6/dist/gridjs.umd.js"></script>
+<script src="/admin/static/admin.js"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

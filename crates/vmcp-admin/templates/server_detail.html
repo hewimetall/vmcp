@@ -1,0 +1,53 @@
+{% extends "layout.html" %}
+{% block title %}{{ name }}{% endblock %}
+{% block content %}
+<div class="row row-cards" data-server-name="{{ name }}">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">{{ name }}</h2>
+      </div>
+      <div class="card-body" id="server-meta">
+        <p class="text-muted">Loading…</p>
+      </div>
+    </div>
+  </div>
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header"><h3 class="card-title">Tools</h3></div>
+      <div class="card-body">
+        <div id="tools-grid"></div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const NAME = document.querySelector('[data-server-name]').dataset.serverName;
+
+fetch(`/admin/api/servers/${encodeURIComponent(NAME)}`).then(r => r.json()).then((s) => {
+  document.getElementById('server-meta').innerHTML = `
+    <dl class="row">
+      <dt class="col-3">Description</dt><dd class="col-9">${s.description ?? '<em>none</em>'}</dd>
+      <dt class="col-3">Tools</dt><dd class="col-9">${s.tool_count} (${s.read_only_count} read-only)</dd>
+      <dt class="col-3">Connected</dt><dd class="col-9">${s.connected ? '✓' : '×'}</dd>
+    </dl>`;
+});
+
+new gridjs.Grid({
+  columns: [
+    'Name',
+    'Description',
+    { name: 'Read-only', width: '100px', formatter: (v) => v ? '✓' : '' },
+    { name: 'Input schema', formatter: (s) => gridjs.html(`<pre>${JSON.stringify(s, null, 2)}</pre>`) },
+  ],
+  server: {
+    url: `/admin/api/servers/${encodeURIComponent(NAME)}/tools`,
+    then: (data) => data.tools.map((t) => [t.name, t.description ?? '', t.readOnly, t.inputSchema]),
+  },
+  resizable: true,
+  className: { table: 'table table-striped' },
+}).render(document.getElementById('tools-grid'));
+</script>
+{% endblock %}

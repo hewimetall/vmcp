@@ -1,0 +1,37 @@
+{% extends "layout.html" %}
+{% block title %}Notifications{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="card-header">
+    <h2 class="card-title">Notifications bus</h2>
+    <div class="card-actions">
+      <button class="btn btn-outline-primary" id="refresh">Refresh</button>
+    </div>
+  </div>
+  <div class="card-body">
+    <p class="text-muted">In-memory ring buffer dump from <code>vmcp_notify::Bus</code>. Newest at the bottom.</p>
+    <div id="notif-grid"></div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const grid = new gridjs.Grid({
+  columns: [
+    { name: 'ID', width: '70px' },
+    { name: 'Source', width: '140px' },
+    'Method',
+    { name: 'Params', formatter: (p) => gridjs.html(`<pre>${JSON.stringify(p, null, 2)}</pre>`) },
+    { name: 'Time', width: '180px', formatter: (ms) => new Date(ms).toISOString() },
+  ],
+  server: {
+    url: '/admin/api/notifications?limit=200',
+    then: (data) => data.notifications.map((n) => [n.id, n.source, n.method, n.params, n.ts_unix_ms]),
+  },
+  resizable: true,
+  className: { table: 'table table-striped' },
+});
+grid.render(document.getElementById('notif-grid'));
+document.getElementById('refresh').addEventListener('click', () => grid.forceRender());
+</script>
+{% endblock %}

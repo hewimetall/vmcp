@@ -1,0 +1,52 @@
+# vmcp gateway configuration — operator-edited.
+#
+# All keys are overridable via env vars with the `VMCP_` prefix (figment merges
+# env over file). Nested keys use `__` as separator, e.g.
+#   VMCP_AUTH__MASTER_PASSWORD_ARGON2='$argon2id$...'
+#
+# OAuth issuer URL must be https or localhost (RFC 8414). For local dev we
+# advertise localhost; prod overrides public_base_url with the real domain.
+
+host = "127.0.0.1"
+port = 8765
+mcp_path = "/mcp"
+public_base_url = "http://localhost:8765"
+
+registry_path = "./registry.json"
+lock_path     = "./tools.lock.json"
+spec_dir      = "./specs"
+skills_dir    = "./skills"
+
+notif_ring_max = 10000
+
+[gql]
+max_depth      = 10
+max_complexity = 1000
+
+[upstream]
+spawn_timeout_ms = 30000
+call_timeout_ms  = 60000
+
+[auth]
+# argon2id hash of the master password — generate with `vmcp hash-password`.
+# This default is the hash of "demo-master" for local dev only. ROTATE in prod.
+master_password_argon2 = "$argon2id$v=19$m=19456,t=2,p=1$YWFhYWFhYWFhYWFhYWFhYQ$REPLACE_ME"
+jwt_kid          = "vmcp-2026-01"
+jwks_rotate_secs = 86400
+token_ttl_secs   = 3600
+issuer           = "http://localhost:8765"
+
+[recorder]
+sessions_dir     = "./sessions"
+redact_keys      = ["password","secret","token","api_key","Authorization"]
+idle_ttl_secs    = 300
+gc_interval_secs = 30
+
+# Optional side endpoint that exposes every resolved upstream MCP tool 1:1
+# (no GraphQL semantic layer, no skills) under `mcp_path`. Useful for clients
+# that don't speak GraphQL and for the comparison demo that puts /mcp and
+# /mcp-proxy logs side-by-side in the admin UI. Shares OAuth + recorder with
+# the main `/mcp` endpoint.
+[proxy]
+enabled  = true
+mcp_path = "/mcp-proxy"

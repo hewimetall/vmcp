@@ -27,7 +27,6 @@ ENV CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc \
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-COPY mcp ./mcp
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/build/target,id=vmcp-target-${TARGET},sharing=locked \

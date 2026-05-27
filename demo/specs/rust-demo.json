@@ -1,9 +1,0 @@
-{
-  "server": "rust-demo",
-  "tools": [
-    { "name": "echo",        "read_only": true  },
-    { "name": "add",         "read_only": true  },
-    { "name": "system_info", "read_only": true  },
-    { "name": "random_uuid", "read_only": false }
-  ]
-}

@@ -16,8 +16,8 @@ members = [
 version = "0.2.0"
 edition = "2021"
 rust-version = "1.80"
-license = "Apache-2.0"
-repository = "https://github.com/derty/codefest2026vmcp"
+license = "MIT"
+repository = "https://github.com/hewimetall/vmcp"
 
 [workspace.dependencies]
 # MCP — official Rust SDK. Client+server, stdio+streamable-http transports, child-process transport for upstream pool.

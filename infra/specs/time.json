@@ -1,7 +1,0 @@
-{
-  "server": "time",
-  "tools": [
-    { "name": "get_current_time", "read_only": true },
-    { "name": "convert_time",     "read_only": true }
-  ]
-}

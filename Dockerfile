@@ -8,7 +8,7 @@
 #
 # Windows binaries are cross-compiled from Linux via mingw-w64 (GNU ABI).
 
-ARG RUST_VERSION=1.80
+ARG RUST_VERSION=1.95
 ARG TARGET=x86_64-unknown-linux-gnu
 
 FROM rust:${RUST_VERSION}-bookworm AS builder

@@ -1,0 +1,16 @@
+{
+  "server": "container_use",
+  "_comment": "container-use tool surface (Dagger) — environment lifecycle is mutating, file/exec ops inside a created env mutate that env's state. Mark all as read_only=false so the GraphQL layer buckets them under Mutation.",
+  "tools": [
+    { "name": "environment_open",          "read_only": false },
+    { "name": "environment_create",        "read_only": false },
+    { "name": "environment_update",        "read_only": false },
+    { "name": "environment_run_cmd",       "read_only": false },
+    { "name": "environment_file_read",     "read_only": true  },
+    { "name": "environment_file_write",    "read_only": false },
+    { "name": "environment_file_list",     "read_only": true  },
+    { "name": "environment_file_delete",   "read_only": false },
+    { "name": "environment_checkpoint",    "read_only": false },
+    { "name": "environment_add_service",   "read_only": false }
+  ]
+}

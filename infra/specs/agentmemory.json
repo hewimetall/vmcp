@@ -1,0 +1,24 @@
+{
+  "server": "agentmemory",
+  "tools": [
+    {
+      "name": "memory_recall",
+      "read_only": true,
+      "description": "Recall past agent observations by topic query. Returns a list of stored memories matching the query, optionally filtered by limit and format (known limitation: 'format' parameter is silently ignored — only \"compact\" mode is returned regardless of value; negative or huge 'limit' values are accepted without validation; see docs/upstream-issues/agentmemory.md)."
+    },
+    {
+      "name": "memory_smart_search",
+      "read_only": true,
+      "description": "Semantic search across stored agent memories with embedding-based ranking. Returns the most relevant past observations for a free-text query (known limitation: 'limit' parameter likely accepts unbounded values without validation; see docs/upstream-issues/agentmemory.md)."
+    },
+    { "name": "memory_sessions",           "read_only": true  },
+    { "name": "memory_export",             "read_only": true  },
+    {
+      "name": "memory_audit",
+      "read_only": true,
+      "description": "Return the audit trail of memory operations (saves, deletes) for governance and observability (known limitation: trail appears empty for operations outside an active session; see docs/upstream-issues/agentmemory.md)."
+    },
+    { "name": "memory_save",               "read_only": false },
+    { "name": "memory_governance_delete",  "read_only": false }
+  ]
+}

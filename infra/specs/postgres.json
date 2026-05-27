@@ -1,0 +1,6 @@
+{
+  "server": "postgres",
+  "tools": [
+    { "name": "query", "read_only": true, "description": "Run a read-only SQL query against the demo Postgres database." }
+  ]
+}

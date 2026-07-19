@@ -1,0 +1,32 @@
+# Артефакты сборки Rust
+target/
+target-docker/
+**/*.rs.bk
+
+# Сгенерированные lock-файлы рабочего состояния
+tools.lock.json
+tools.lock.json.bak
+tools.lock.json.tmp
+
+# Файл pre-registered static token (секрет — bearer credentials) и временные
+# файлы атомарной записи. Если `auth.tokens_file` указывает в другое место,
+# игнорируйте и его.
+tokens.json
+tokens.json.tmp*
+
+# Dumps сессий recorder (runtime data — по умолчанию recorder.sessions_dir)
+sessions/
+
+# Локальное состояние SQLite (DCR clients, опциональная tasks DB)
+state/
+
+.env
+
+# Выходные файлы release (tar.gz, zip)
+dist/
+
+# Мусор OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp

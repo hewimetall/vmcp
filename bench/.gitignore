@@ -1,0 +1,8 @@
+results/*
+# but keep the canonical A vs C run that backs RESULTS.md
+!results/A_current.jsonl
+!results/C_noguidance.jsonl
+
+.venv/
+__pycache__/
+*.pyc

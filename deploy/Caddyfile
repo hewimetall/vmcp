@@ -1,0 +1,3 @@
+{$VMCP_DOMAIN} {
+	reverse_proxy vmcp:8765
+}

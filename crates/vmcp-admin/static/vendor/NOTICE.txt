@@ -1,0 +1,5 @@
+Vendored browser assets for the Sessions GraphQL Detail block.
+Loaded at runtime from admin.js (no CDN, CSP script-src 'self').
+
+- graphql-format.min.js — esbuild bundle of graphql@16 print/parse (MIT)
+- prism-core.min.js / prism-graphql.min.js / prism-json.min.js — PrismJS 1.30 (MIT)

@@ -1,0 +1,14 @@
+# Optional override: build the vmcp image from this repo instead of pulling
+# the GHCR image published by `.github/workflows/release.yml`.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#   ./deploy/bootstrap.sh --domain gateway.example.com --build
+#
+# Prefer the published image for production (see docs/deployment.md).
+
+services:
+  vmcp:
+    build:
+      context: .
+      target: runtime
+    image: ${VMCP_IMAGE:-vmcp:local}

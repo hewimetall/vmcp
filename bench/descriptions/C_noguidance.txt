@@ -1,0 +1,5 @@
+Execute a GraphQL query against the vmcp gateway. Upstream MCP tools are exposed as GraphQL fields under a per-server namespace.
+
+Shape: `{ <server> { <tool>(args) { json text isError } } }`. Use `{ servers { name } }` to list available servers.
+
+Args: `query` (required GraphQL string), `variables` (optional), `operation_name` (optional).

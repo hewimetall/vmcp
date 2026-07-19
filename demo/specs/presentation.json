@@ -1,0 +1,22 @@
+{
+  "server": "presentation",
+  "tools": [
+    { "name": "get_session",        "read_only": true },
+    { "name": "list_sessions",      "read_only": true },
+    { "name": "get_workspace",      "read_only": true },
+    { "name": "list_workspaces",    "read_only": true },
+    { "name": "get_build_status",   "read_only": true },
+    { "name": "get_slide_image",    "read_only": true },
+
+    { "name": "create_session",         "read_only": false },
+    { "name": "create_project",         "read_only": false },
+    { "name": "checkout_workspace",     "read_only": false },
+    { "name": "create_workspace",       "read_only": false },
+    { "name": "set_active_workspace",   "read_only": false },
+    { "name": "remove_workspace",       "read_only": false },
+    { "name": "save_presentation_ir",   "read_only": false },
+    { "name": "commit_workspace",       "read_only": false },
+    { "name": "build_presentation",     "read_only": false, "task_support": "optional" },
+    { "name": "deploy_presentation",    "read_only": false, "task_support": "optional" }
+  ]
+}

@@ -1,0 +1,75 @@
+[package]
+name = "vmcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+default-run = "vmcp"
+
+[[bin]]
+name = "vmcp"
+path = "src/main.rs"
+
+[dependencies]
+# Core crates — always linked (HTTP is the only ingress).
+vmcp-config   = { path = "../vmcp-config" }
+vmcp-registry = { path = "../vmcp-registry" }
+vmcp-notify   = { path = "../vmcp-notify" }
+vmcp-upstream = { path = "../vmcp-upstream" }
+vmcp-graphql  = { path = "../vmcp-graphql" }
+vmcp-auth     = { path = "../vmcp-auth" }
+vmcp-server   = { path = "../vmcp-server" }
+vmcp-watch    = { path = "../vmcp-watch" }
+# Admin-UI-only crate (feature `admin`).
+vmcp-admin    = { path = "../vmcp-admin", optional = true }
+rmcp = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-opentelemetry = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+arc-swap = { workspace = true }
+# HTTP gateway stack (always on — local stdio ingress lives in vmcp-lite).
+url = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+bytes = { version = "1" }
+futures = { workspace = true }
+async-stream = { version = "0.3" }
+
+[features]
+default = ["admin"]
+
+# Admin SPA at `/admin`.
+admin = ["dep:vmcp-admin"]
+
+# OpenTelemetry MCP session traces → local sessions_dir (replaces JSON-RPC
+# recorder capture). Enable with: cargo build -p vmcp --features otel
+otel = [
+    "vmcp-server/otel",
+    "vmcp-admin?/otel",
+    "dep:tracing-opentelemetry",
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+]
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+rmcp = { workspace = true, features = [
+    "client",
+    "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+    "reqwest",
+] }
+vmcp-auth = { path = "../vmcp-auth" }
+async-graphql = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+axum = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }

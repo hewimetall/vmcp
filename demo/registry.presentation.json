@@ -1,0 +1,18 @@
+{
+  "upstreams": [
+    {
+      "name": "presentation",
+      "description": "MCP presentation builder (PDF/web): sessions, workspaces, IR, build, deploy. Upstream: hewimetall/mcp-presentation.",
+      "command": "/tmp/mcp-presentation/.venv/bin/mcp-presentation",
+      "args": [],
+      "env": {
+        "MCP_PRESENTATION_STATE": "/workspace/demo/presentation/state",
+        "MCP_PRESENTATION_PROJECTS": "/workspace/demo/presentation/projects",
+        "MCP_PRESENTATION_WORKSPACES": "/workspace/demo/presentation/workspaces",
+        "FASTMCP_SHOW_CLI_BANNER": "false"
+      },
+      "enabled": true,
+      "sidecar_spec": "presentation.json"
+    }
+  ]
+}

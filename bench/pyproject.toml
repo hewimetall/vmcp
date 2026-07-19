@@ -1,0 +1,15 @@
+[project]
+name = "vmcp-bench"
+version = "0.1.0"
+description = "LLM batching-aggression benchmark for query_graphql"
+requires-python = ">=3.11"
+dependencies = [
+  "openai>=1.40",
+  "tenacity>=8.2",
+  "typer>=0.12",
+  "rich>=13.7",
+  "pandas>=2.2",
+]
+
+[tool.uv]
+package = false

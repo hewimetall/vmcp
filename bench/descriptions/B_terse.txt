@@ -1,0 +1,7 @@
+Execute GraphQL against the vmcp semantic layer. Every upstream MCP server (postgres, time, jira, ...) is reached through ONE typed GraphQL surface.
+
+Batch related questions into ONE document via aliased top-level fields — they run in parallel server-side. Multiple `query_graphql` calls for related data = wasted round-trips.
+
+Shape: `{ <server> { <tool>(args) { json text isError } } }`. Discovery: `{ servers { name description } }` lists upstreams.
+
+Args: `query` (required), `variables` (optional object), `operation_name` (optional).

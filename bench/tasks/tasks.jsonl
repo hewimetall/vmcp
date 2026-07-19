@@ -1,0 +1,7 @@
+{"id": "demo_summary", "user_msg": "Подготовь краткую сводку по компании из demo: сколько у нас сейчас клиентов, отделов, сотрудников и заказов; топ-3 самых высокооплачиваемых сотрудника (имя и зарплата); список клиентов с указанием страны и текущего времени в её столице (RU → Москва, DE → Берлин, JP → Токио)."}
+{"id": "world_clock_table", "user_msg": "Make a table with the current time in three cities: Moscow, Berlin, and Tokyo. Also include the IANA timezone identifier for each."}
+{"id": "employee_dept_overview", "user_msg": "How many employees do we have in total, how many departments, and who are the top 5 highest-paid employees (name, salary, department)?"}
+{"id": "customer_country_breakdown", "user_msg": "Show me a breakdown of customers by country: count per country, plus the total number of customers and the total number of countries represented."}
+{"id": "orders_employees_join", "user_msg": "How many orders did each employee handle? Return employee name, total orders, and total order value, sorted by total value descending. Limit to top 10."}
+{"id": "time_postgres_mixed", "user_msg": "Tell me the current UTC time, the current time in Asia/Tokyo, and the names of the first 3 departments alphabetically."}
+{"id": "small_targeted", "user_msg": "What's the current time in Europe/Moscow right now?"}

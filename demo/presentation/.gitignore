@@ -1,0 +1,6 @@
+# Runtime data produced when mcp-presentation runs behind the gateway.
+state/
+projects/
+workspaces/
+tools.lock.json
+!.gitkeep

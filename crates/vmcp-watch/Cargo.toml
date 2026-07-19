@@ -1,0 +1,10 @@
+[package]
+name = "vmcp-watch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+notify = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }

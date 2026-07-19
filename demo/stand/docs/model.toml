@@ -1,0 +1,23 @@
+workspace_id = "stand"
+
+[[elements]]
+id = "developer"
+workspace_id = "stand"
+kind = "person"
+name = "Developer"
+description = "Uses the stand demo project through the vmcp gateway"
+
+[[elements]]
+id = "stand"
+workspace_id = "stand"
+kind = "software_system"
+name = "Stand"
+description = "Minimal Python demo project for local MCP upstream smoke tests"
+technology = "Python"
+
+[[relationships]]
+id = "rel-developer-stand"
+workspace_id = "stand"
+from_id = "developer"
+to_id = "stand"
+description = "Develops and runs"

@@ -1,0 +1,17 @@
+[package]
+name = "vmcp-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+figment = { workspace = true }
+toml = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }
+tracing = { workspace = true }
+# Parse the master-password PHC hash at config-load time so a malformed or
+# placeholder hash fails fast at boot instead of during the OAuth consent flow.
+argon2 = { workspace = true }

@@ -1,0 +1,43 @@
+# Demo gateway config. Run from repo root:
+#   ./vmcp --config ./demo/vmcp.toml
+#   cargo run -p vmcp -- --config ./demo/vmcp.toml
+
+host = "127.0.0.1"
+port = 8765
+mcp_path = "/mcp"
+public_base_url = "http://localhost:8765"
+
+registry_path = "./demo/registry.json"
+lock_path     = "./demo/tools.lock.json"
+spec_dir      = "./demo/specs"
+skills_dir    = "./demo/skills"
+
+notif_ring_max = 10000
+
+[gql]
+max_depth      = 10
+max_complexity = 1000
+
+[upstream]
+spawn_timeout_ms = 120000
+call_timeout_ms  = 60000
+
+[auth]
+enabled = false
+# kept for when you flip enabled = true locally
+master_password_argon2 = "$argon2id$v=19$m=19456,t=2,p=1$EKXF2yiUMT1injIS9ueldA$1Pra/zoGSKVIkZq1fCg0Hd2ceJuQn1H4k2lXeKUkMD8"
+jwt_kid          = "vmcp-2026-01"
+jwks_rotate_secs = 86400
+token_ttl_secs   = 3600
+issuer           = "http://localhost:8765"
+clients_db_path  = "./demo/state/clients.db"
+
+[recorder]
+sessions_dir     = "./demo/sessions"
+redact_keys      = ["password", "secret", "token", "api_key", "Authorization"]
+idle_ttl_secs    = 300
+gc_interval_secs = 30
+
+[proxy]
+enabled  = true
+mcp_path = "/mcp-proxy"

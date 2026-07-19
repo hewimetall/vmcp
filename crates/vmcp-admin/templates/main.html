@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>vmcp admin — Tools</title>
+  <link rel="stylesheet" href="/admin/static/admin.css">
+</head>
+<body>
+<div class="shell">
+
+  <!-- 🟣 Sidebar #1 — main navigation (all items present, only Services active) -->
+  <aside class="side1">
+    <div class="side1__brand">vmcp</div>
+    <nav class="side1__nav">
+      <a class="nav-link active" data-nav="services" href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"><path d="M3 10.6 12 3l9 7.6"/><path d="M5.2 9.4V20h13.6V9.4"/><path d="M9.6 20v-5.4h4.8V20"/></svg>
+        Services
+      </a>
+      <a class="nav-link" data-nav="skills" href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"><path d="M12 6.2C10.4 5 7.8 4.2 5.2 4.2H3.2v13.6h2C7.8 17.8 10.4 18.6 12 19.8c1.6-1.2 4.2-2 6.8-2h2V4.2h-2C16.2 4.2 13.6 5 12 6.2z"/><path d="M12 6.2v13.6"/></svg>
+        Skills
+      </a>
+      <a class="nav-link" data-nav="sessions" href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><polyline points="12 7 12 12 16 14"/></svg>
+        Sessions
+      </a>
+      <a class="nav-link" data-nav="compare" href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="6.8" height="16" rx="1"/><rect x="13.2" y="4" width="6.8" height="16" rx="1"/></svg>
+        Compare
+      </a>
+      <a class="nav-link" data-nav="schema" href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M4 12h10"/><path d="M4 17h14"/><circle cx="18" cy="12" r="1.5"/></svg>
+        Schema
+      </a>
+      <a class="nav-link" data-nav="notifications" href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10 21a2 2 0 0 0 4 0"/></svg>
+        Notifications
+      </a>
+    </nav>
+    <div class="side1__spacer"></div>
+    <div class="side1__footer">
+      <a class="nav-link" href="#" title="HTTP Basic — browser prompts on first visit">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+        Sign in
+      </a>
+    </div>
+  </aside>
+
+  <!-- Sidebar #2 — list column.
+       Services: upstream MCP servers. Skills: skills list (Figma 452:1659).
+       Hidden for Sessions / Compare / Schema / Notifications. -->
+  <aside class="side2" id="side2" data-mode="services">
+    <div class="side2__header">
+      <h2 class="side2__title">Upstream MCP servers</h2>
+      <div class="side2__search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" id="server-search" placeholder="Search servers…" autocomplete="off">
+      </div>
+    </div>
+    <div class="side2__list" id="server-list">
+      <p class="muted">Loading…</p>
+    </div>
+  </aside>
+
+  <!-- right area: 🔴 header (empty) + 🟡 body (service tools / skill detail) -->
+  <div class="main">
+    <header class="header"></header>
+    <main class="body" id="server-cards">
+      <p class="muted">Loading…</p>
+    </main>
+  </div>
+
+</div>
+
+<!-- Skill inspect modal — opened by Edit / Duplicate / + New skill.
+     Toggled via `.show` by admin.js. -->
+<div class="modal" id="skill-modal" aria-hidden="true">
+  <div class="modal__dialog">
+    <div class="modal__header">
+      <h5 id="skill-modal-title">New skill</h5>
+      <button type="button" class="modal__close" id="skill-modal-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal__body">
+      <input type="hidden" id="skill-modal-mode" value="new">
+      <input type="hidden" id="skill-modal-original-name" value="">
+      <div class="field-group">
+        <label class="field-label">Name</label>
+        <input type="text" class="input" id="skill-modal-name" placeholder="e.g. summarize_thread" autocomplete="off">
+        <small class="form-hint">Identifier — letters, numbers, underscores, dashes.</small>
+      </div>
+      <div class="field-group">
+        <label class="field-label">Description</label>
+        <input type="text" class="input" id="skill-modal-description" placeholder="One-line description shown to MCP clients" autocomplete="off">
+      </div>
+      <div class="field-group">
+        <label class="field-label">Arguments</label>
+        <div id="skill-modal-args"></div>
+        <button type="button" class="btn btn--neutral btn--sm mt-2" id="skill-modal-add-arg">+ Add argument</button>
+      </div>
+      <div class="field-group">
+        <label class="field-label">Template</label>
+        <textarea class="textarea" id="skill-modal-template" rows="10" placeholder="Handlebars-style {% raw %}{{argument}}{% endraw %} interpolation"></textarea>
+      </div>
+      <div class="danger d-none" id="skill-modal-error"></div>
+    </div>
+    <div class="modal__footer">
+      <button type="button" class="btn btn--neutral me-auto" id="skill-modal-cancel">Cancel</button>
+      <button type="button" class="btn btn--primary" id="skill-modal-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<script src="/admin/static/admin.js"></script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+{
+  "server": "filesystem",
+  "tools": [
+    { "name": "list_allowed_directories", "read_only": true },
+    { "name": "list_directory", "read_only": true },
+    { "name": "list_directory_with_sizes", "read_only": true },
+    { "name": "directory_tree", "read_only": true },
+    { "name": "read_file", "read_only": true },
+    { "name": "read_multiple_files", "read_only": true },
+    { "name": "search_files", "read_only": true },
+    { "name": "get_file_info", "read_only": true },
+    { "name": "write_file", "read_only": false },
+    { "name": "edit_file", "read_only": false },
+    { "name": "create_directory", "read_only": false },
+    { "name": "move_file", "read_only": false }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "upstreams": [
+    {
+      "name": "time",
+      "description": "Current time and timezone conversion (IANA TZ).",
+      "command": "uvx",
+      "args": ["mcp-server-time", "--local-timezone=Europe/Moscow"],
+      "enabled": true,
+      "sidecar_spec": "time.json"
+    },
+    {
+      "name": "filesystem",
+      "description": "Local filesystem over ./demo/stand (read/list/read tools).",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "./demo/stand"],
+      "enabled": true,
+      "sidecar_spec": "filesystem.json"
+    },
+    {
+      "name": "architect_c4",
+      "description": "C4 architecture model over demo/stand/docs.",
+      "command": "uvx",
+      "args": ["architect-c4-mcp", "--docs", "./demo/stand/docs"],
+      "enabled": true,
+      "sidecar_spec": "architect_c4.json"
+    },
+    {
+      "name": "agent_lsp",
+      "description": "LSP orchestration (Python via pyright) for demo/stand.",
+      "command": "agent-lsp",
+      "args": ["python:pyright-langserver,--stdio"],
+      "enabled": true,
+      "sidecar_spec": "agent_lsp.json"
+    },
+    {
+      "name": "context7",
+      "description": "Up-to-date library docs and code examples (Context7).",
+      "transport": "http",
+      "url": "https://mcp.context7.com/mcp",
+      "bearer": "${CONTEXT7_API_KEY}",
+      "enabled": true
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "server": "agent_lsp",
+  "tools": [
+    { "name": "start_lsp", "read_only": false },
+    { "name": "list_symbols", "read_only": true },
+    { "name": "find_references", "read_only": true },
+    { "name": "go_to_definition", "read_only": true },
+    { "name": "inspect_symbol", "read_only": true },
+    { "name": "explore_symbol", "read_only": true },
+    { "name": "blast_radius", "read_only": true },
+    { "name": "get_diagnostics", "read_only": true }
+  ]
+}

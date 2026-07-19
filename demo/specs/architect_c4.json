@@ -1,0 +1,24 @@
+{
+  "server": "architect_c4",
+  "tools": [
+    { "name": "bind_docs", "read_only": false },
+    { "name": "get_model", "read_only": true },
+    { "name": "validate_model", "read_only": true },
+    { "name": "upsert_element", "read_only": false },
+    { "name": "upsert_relationship", "read_only": false },
+    { "name": "delete_relationship", "read_only": false },
+    { "name": "get_adr", "read_only": true },
+    { "name": "list_adrs", "read_only": true },
+    { "name": "upsert_adr", "read_only": false },
+    { "name": "set_adr_status", "read_only": false },
+    { "name": "get_flow", "read_only": true },
+    { "name": "list_flows", "read_only": true },
+    { "name": "upsert_flow", "read_only": false },
+    { "name": "delete_flow", "read_only": false },
+    { "name": "get_flow_diagram", "read_only": true },
+    { "name": "get_overview_diagram", "read_only": true },
+    { "name": "get_layer_diagram", "read_only": true },
+    { "name": "get_view_links", "read_only": true },
+    { "name": "get_scene", "read_only": true }
+  ]
+}

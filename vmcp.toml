@@ -1,0 +1,77 @@
+# vmcp gateway configuration — operator-edited.
+#
+# All keys are overridable via env vars with the `VMCP_` prefix (figment merges
+# env over file). Nested keys use `__` as separator, e.g.
+#   VMCP_AUTH__MASTER_PASSWORD_ARGON2='$argon2id$...'
+#
+# OAuth issuer URL must be https or localhost (RFC 8414). For local dev we
+# advertise localhost; prod overrides public_base_url with the real domain.
+
+host = "127.0.0.1"
+port = 8765
+mcp_path = "/mcp"
+public_base_url = "http://localhost:8765"
+
+registry_path = "./registry.json"   # upstream catalogue (docs/upstreams.md)
+lock_path     = "./tools.lock.json" # generated tools snapshot
+spec_dir      = "./specs"           # sidecar read_only / task_support overrides
+skills_dir    = "./skills"          # YAML playbooks → MCP prompts (docs/skills.md)
+
+notif_ring_max = 10000
+
+[gql]
+max_depth      = 10
+max_complexity = 1000
+
+[upstream]
+# Cold uvx/npx first spawn can exceed 30s — keep both keys here (do not set
+# only one via VMCP_UPSTREAM__* env or figment may reject incomplete nested).
+spawn_timeout_ms = 120000
+call_timeout_ms  = 60000
+
+[auth]
+# enabled = true   # set false for local dev only — disables bearer on /mcp and hides /admin
+# argon2id hash of the master password — generate with `vmcp hash-password`.
+# This default is the hash of "demo-master" for local dev only. ROTATE in prod.
+master_password_argon2 = "$argon2id$v=19$m=19456,t=2,p=1$EKXF2yiUMT1injIS9ueldA$1Pra/zoGSKVIkZq1fCg0Hd2ceJuQn1H4k2lXeKUkMD8"
+jwt_kid          = "vmcp-2026-01"
+jwks_rotate_secs = 86400
+token_ttl_secs   = 3600
+issuer           = "http://localhost:8765"
+# Optional file of pre-registered eternal opaque tokens (`vmcp pre-reg`).
+# When set, its `vmcp_`-prefixed tokens bypass OAuth and never expire; the file
+# is hot-reloaded on change. Treat it as a secret (it's git-ignored by default).
+# tokens_file = "./tokens.json"
+# Durable DCR client registry (SQLite, same idea as [tasks].db_path). Survives
+# gateway restart so Cursor can reuse its stored client_id. See docs/authentication.md.
+clients_db_path  = "./state/clients.db"
+
+[recorder]
+# Live MCP session list + exchange dumps (JSON under directories).
+# Layout: sessions_dir/.registry/{id}.json  and  sessions_dir/{client}/…
+# See docs/sessions.md — survives gateway restart (mount writable in Docker).
+sessions_dir     = "./sessions"
+redact_keys      = ["password","secret","token","api_key","Authorization"]
+idle_ttl_secs    = 300
+gc_interval_secs = 30
+
+# Optional side endpoint that exposes every resolved upstream MCP tool and
+# prompt 1:1 (`{server}__{name}`) under `mcp_path`. No GraphQL schema, no
+# local skills. Upstream prompts/get is prepended with a GraphQL tool-routing
+# table. The same flag gates upstream prompts in GraphQL on `/mcp`. Useful for
+# clients that don't speak GraphQL and for the /mcp vs /mcp-proxy comparison
+# demo. Shares OAuth + recorder with the main `/mcp` endpoint. See docs/skills.md.
+[proxy]
+enabled  = true
+mcp_path = "/mcp-proxy"
+
+# Optional native MCP Tasks (SEP-1686). Off by default.
+# When enabled, vmcp registers `run_task` for upstream tools with
+# execution.taskSupport (or sidecar task_support) and stores durable rows in
+# SQLite. GraphQL stays sync. See docs/tasks.md.
+# [tasks]
+# enabled = true
+# db_path = "state/tasks.db"
+# task_ttl_ms = 300000
+# poll_interval_ms = 2000
+# max_concurrent = 16

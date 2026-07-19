@@ -1,0 +1,83 @@
+Execute GraphQL against the vmcp semantic layer. This is the ONLY tool — every upstream MCP server (postgres, time, jira, etc.) is reached through ONE typed GraphQL surface, NOT through separate per-upstream tools.
+
+═══════════════════════════════════════════════════════════════
+RULE #1 — BATCH EVERYTHING INTO ONE CALL.
+═══════════════════════════════════════════════════════════════
+
+GraphQL aliased fields execute in PARALLEL inside a single document. The whole point of this tool is that you write ONE document covering EVERY piece of data the user asked for, and the server fans out concurrently. Do not call `query_graphql` multiple times in a row for related questions — that is the single biggest waste of tokens and round-trips you can do here.
+
+❌ ANTI-PATTERN (do NOT do this):
+turn 1: query_graphql({ time { getCurrentTime(timezone: "Europe/Moscow") { json } } })
+turn 2: query_graphql({ time { getCurrentTime(timezone: "Asia/Tokyo") { json } } })
+turn 3: query_graphql({ postgres { query(sql: "SELECT ...") { json } } })
+
+✓ CORRECT (one call, three aliased fields run concurrently):
+query_graphql({
+moscow:    time { getCurrentTime(timezone: "Europe/Moscow") { json } }
+tokyo:     time { getCurrentTime(timezone: "Asia/Tokyo")    { json } }
+customers: postgres { query(sql: "SELECT name, country FROM customers") { json } }
+})
+
+Multiple top-level aliases in one document = one network round-trip = one entry in the audit log. The user's question may MENTION several things — count them, alias them all in ONE document, send it once. If you find yourself thinking "first I'll fetch X, then Y" — stop, combine them.
+
+Aliasing inside a single SQL: use SQL features (UNION ALL, JOIN, CASE) to pack multiple related questions into one `postgres.query` field. Even cheaper than two GraphQL aliases.
+
+═══════════════════════════════════════════════════════════════
+RULE #1B — BREAKDOWN + TOTALS = ONE CALL, ALWAYS TWO ALIASES.
+═══════════════════════════════════════════════════════════════
+
+When the user asks for a grouped breakdown AND aggregate totals over the same data ("count per X, plus the total"), it is ONE call with TWO aliased postgres queries — never a breakdown call followed by a totals call.
+
+❌ ANTI-PATTERN (do NOT do this — wastes a round-trip):
+turn 1: query_graphql({ postgres { query(sql: "SELECT country, COUNT(*) FROM customers GROUP BY country") { json } } })
+turn 2: query_graphql({ postgres { query(sql: "SELECT COUNT(*) total, COUNT(DISTINCT country) countries FROM customers") { json } } })
+
+✓ CORRECT (one call, both aliases at the postgres level):
+query_graphql({
+postgres {
+by_country: query(sql: "SELECT country, COUNT(*) AS n FROM customers GROUP BY country") { json }
+totals:     query(sql: "SELECT COUNT(*) AS total, COUNT(DISTINCT country) AS countries FROM customers") { json }
+}
+})
+
+Re-read the user message before you write the query. Count the distinct sub-questions ("breakdown", "total", "top-N", "per X", etc.) — your document must have at LEAST that many alias fields. Two sub-questions = at least two aliases, not two calls.
+
+═══════════════════════════════════════════════════════════════
+RULE #1C — PER-CATEGORY LOOPS ARE A BUG. USE GROUP BY.
+═══════════════════════════════════════════════════════════════
+
+If you find yourself about to issue one query per category ("SELECT … WHERE country='RU'", then "… country='DE'", …), STOP. That's the same per-row anti-pattern in disguise.
+
+❌ ANTI-PATTERN:
+turn 1: query(sql: "SELECT COUNT(*) FROM customers WHERE country='RU'")
+turn 2: query(sql: "SELECT COUNT(*) FROM customers WHERE country='DE'")
+turn 3: query(sql: "SELECT COUNT(*) FROM customers WHERE country='JP'")
+
+✓ CORRECT — one SQL, GROUP BY does the per-category split for you:
+query(sql: "SELECT country, COUNT(*) FROM customers GROUP BY country")
+
+═══════════════════════════════════════════════════════════════
+DISCOVERY LADDER (only when you don't already know the field names)
+═══════════════════════════════════════════════════════════════
+
+Start at the cheapest step. Skip steps you don't need. Then write ONE batched call.
+
+0. (MCP) `prompts/list` + `prompts/get` — operator-curated skill playbooks. If a prompt description matches the task, fetch it: the rendered template already contains a ready-made aliased GraphQL document. Use it VERBATIM — do not split it up.
+1. `{ servers { name description toolCount readOnlyCount } }` — catalogue of upstreams. Cheapest GraphQL probe. Combine with the real query in one document if you want both.
+2. `{ search(q: "<keywords>") { server tool readOnly description } }` — token-level full-text match across tool names + descriptions, ranked. Token match is case-insensitive, no fuzzy/synonyms — pick descriptive keywords.
+3. `{ ns: __type(name: "<Pascal(server)><Read|Write>") { fields { name description args { name description type { kind name ofType { kind name ofType { kind name }}}}}}}` — typed signature for ONE namespace. Name is `PascalCase(server)` + `Read` if `readOnly` is true else `Write`.
+4. Compose the real call as ONE aliased document.
+
+═══════════════════════════════════════════════════════════════
+SHAPE & RULES
+═══════════════════════════════════════════════════════════════
+
+Query    `{ <serverCamel> { <toolCamel>(args) { json text isError } } }`
+Mutation `mutation { <serverCamel> { <toolCamel>(args) { json text isError } } }`
+Read vs Write split: by upstream's `readOnlyHint`. search/list/get → Query.foo, create/update/delete → Mutation.foo.
+
+- DO NOT request `__schema { types { ... fields { ... } ... } }` with deep nesting — dumps the entire catalogue and burns context. Shallow `__schema { types { name kind } }` ok as a fallback when `servers` isn't enough.
+- One OPERATION per document (the validator falsely flags disjoint variable sets across operations). Multiple ALIASED FIELDS in one operation is fine and encouraged.
+- Drift signals: `notifications/tools/list_changed` / `notifications/prompts/list_changed` — re-run discovery steps 0–1 if you receive one.
+
+Args: `query` (required GraphQL document), `variables` (optional JSON object), `operation_name` (optional). Returns the standard GraphQL response `{ "data": ..., "errors": ... }`.

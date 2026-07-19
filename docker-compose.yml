@@ -1,0 +1,68 @@
+# docker compose for a TLS-terminated vmcp deployment.
+#
+# Production path: pull the image built by `.github/workflows/release.yml`
+# (pushed to GHCR on every `v*` tag) — do not rebuild on the VPS.
+#
+#   ./deploy/bootstrap.sh --domain gateway.example.com --tag latest
+#   # or manually:
+#   cp .env.example .env   # set VMCP_DOMAIN, VMCP_IMAGE, VMCP_MASTER_PASSWORD_ARGON2
+#   docker compose pull && docker compose up -d
+#   curl -fsS https://$VMCP_DOMAIN/health
+#
+# Local rebuild (dev / unreleased main):
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+#
+# Caddy fronts vmcp on 80/443 and provisions a Let's Encrypt cert for
+# ${VMCP_DOMAIN}. vmcp itself only listens on the internal network.
+
+services:
+  vmcp:
+    # Default: GHCR image from the release workflow. Override via VMCP_IMAGE
+    # in `.env` (e.g. ghcr.io/hewimetall/vmcp:1.0.0 or a sha tag).
+    image: ${VMCP_IMAGE:-ghcr.io/hewimetall/vmcp:latest}
+    restart: unless-stopped
+    expose:
+      - "8765"
+    environment:
+      VMCP_HOST: "0.0.0.0"
+      VMCP_PORT: "8765"
+      VMCP_PUBLIC_BASE_URL: "https://${VMCP_DOMAIN}"
+      VMCP_AUTH__ISSUER: "https://${VMCP_DOMAIN}"
+      VMCP_AUTH__MASTER_PASSWORD_ARGON2: "${VMCP_MASTER_PASSWORD_ARGON2}"
+      # Runtime image has no Node/uv — do not use the local demo registry here.
+      # Mount your own VPS registry under /data; for local demo use cargo run.
+      VMCP_REGISTRY_PATH: "/data/registry.json"
+      VMCP_SPEC_DIR: "/data/specs"
+      VMCP_SKILLS_DIR: "/data/skills"
+      # Persist admin session registry + dumps across recreates (docs/sessions.md).
+      VMCP_RECORDER__SESSIONS_DIR: "/var/lib/vmcp/sessions"
+      # Persist DCR OAuth clients across recreates (docs/authentication.md).
+      VMCP_AUTH__CLIENTS_DB_PATH: "/var/lib/vmcp/state/clients.db"
+      RUST_LOG: "info"
+    volumes:
+      - ./vmcp.toml:/vmcp.toml:ro
+      - ./demo:/data:ro
+      - vmcp_sessions:/var/lib/vmcp/sessions
+      - vmcp_state:/var/lib/vmcp/state
+    command: ["--config", "/vmcp.toml"]
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      VMCP_DOMAIN: "${VMCP_DOMAIN}"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - vmcp
+
+volumes:
+  caddy_data:
+  caddy_config:
+  vmcp_sessions:
+  vmcp_state:

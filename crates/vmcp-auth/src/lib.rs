@@ -16,6 +16,6 @@ pub mod static_tokens;
 pub mod tokens;
 pub mod types;
 
-pub use middleware::require_bearer;
+pub use middleware::{require_admin_scope, require_bearer};
 pub use router::build_router;
 pub use state::{AuthState, RenameClientError};

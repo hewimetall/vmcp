@@ -105,6 +105,28 @@ pub fn claims_from_extensions(ext: &axum::http::Extensions) -> Option<&AccessTok
     ext.get::<AccessTokenClaims>()
 }
 
+/// After [`require_bearer`], reject unless claims.scope contains `mcp:admin`.
+/// Intended for `/api/v1/*` control-plane routes.
+pub async fn require_admin_scope(req: Request<Body>, next: Next) -> Response {
+    use crate::static_tokens::{scope_contains, SCOPE_ADMIN};
+
+    match claims_from_extensions(req.extensions()) {
+        Some(claims) if scope_contains(&claims.scope, SCOPE_ADMIN) => next.run(req).await,
+        Some(_) => (StatusCode::FORBIDDEN, "missing scope mcp:admin").into_response(),
+        None => unauthorized_plain("missing_bearer"),
+    }
+}
+
+fn unauthorized_plain(error: &str) -> Response {
+    let challenge = format!("Bearer error=\"{error}\"");
+    let mut resp = (StatusCode::UNAUTHORIZED, error.to_string()).into_response();
+    resp.headers_mut().insert(
+        header::WWW_AUTHENTICATE,
+        challenge.parse().expect("static header value"),
+    );
+    resp
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

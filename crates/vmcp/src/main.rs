@@ -8,6 +8,7 @@
 
 #![allow(clippy::result_large_err)]
 
+mod api_v1;
 mod boot;
 #[cfg(not(feature = "otel"))]
 mod mcp_capture;
@@ -153,11 +154,13 @@ async fn serve_http(
     };
     use tracing::{error, warn};
     use vmcp_auth::{
-        build_router as auth_router, client_store::ClientStore, jwks::JwksManager, require_bearer,
-        state::AuthState,
+        build_router as auth_router, client_store::ClientStore, jwks::JwksManager,
+        require_admin_scope, require_bearer, state::AuthState,
     };
     use vmcp_server::ProxyServer;
     use vmcp_watch::spawn_file_watcher;
+
+    use crate::api_v1::{self, ApiV1State};
 
     let cfg = &ctx.cfg;
     info!(host = %cfg.host, port = cfg.port, "vmcp starting");
@@ -323,6 +326,18 @@ async fn serve_http(
         .merge(auth_router(auth_state.clone()))
         .route("/health", get(|| async { "ok" }))
         .nest(&cfg.mcp_path, mcp_router);
+
+    // Operator control-plane (Bearer + mcp:admin). Parallel to `/admin` Basic SPA.
+    if cfg.auth.enabled {
+        let api_state = ApiV1State::new(auth_state.clone(), cfg.auth.tokens_file.clone());
+        let api_router = api_v1::router(api_state)
+            .layer(middleware::from_fn(require_admin_scope))
+            .layer(middleware::from_fn_with_state(
+                auth_state.clone(),
+                require_bearer,
+            ));
+        app = app.nest("/api/v1", api_router);
+    }
 
     #[cfg(feature = "admin")]
     {

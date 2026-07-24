@@ -22,15 +22,12 @@ use vmcp_upstream::UpstreamPool;
 /// Everything the HTTP ingress needs after config is loaded.
 pub struct BootContext {
     pub cfg: Settings,
-    // `bus`, `schema_swap`, and `skills` are consumed only by the admin UI
-    // (feature `admin`); HTTP-without-admin still builds them for the MCP
-    // server surface but never reads the handles outside boot.
+    // `bus` is consumed by the admin UI (feature `admin`).
     #[cfg_attr(not(feature = "admin"), allow(dead_code))]
     pub bus: Arc<Bus>,
     pub pool: Arc<UpstreamPool>,
-    #[cfg_attr(not(feature = "admin"), allow(dead_code))]
+    /// Shared with MCP server + registry hot-reload (+ admin when enabled).
     pub schema_swap: SchemaHandle,
-    #[cfg_attr(not(feature = "admin"), allow(dead_code))]
     pub skills: SkillsHandle,
     pub vmcp_server: VmcpServer,
 }

@@ -8,11 +8,13 @@
 
 #![allow(clippy::result_large_err)]
 
+mod api_v1;
 mod boot;
 #[cfg(not(feature = "otel"))]
 mod mcp_capture;
 #[cfg(feature = "otel")]
 mod mcp_otel;
+mod registry_reload;
 
 use std::path::PathBuf;
 
@@ -153,11 +155,14 @@ async fn serve_http(
     };
     use tracing::{error, warn};
     use vmcp_auth::{
-        build_router as auth_router, client_store::ClientStore, jwks::JwksManager, require_bearer,
-        state::AuthState,
+        build_router as auth_router, client_store::ClientStore, jwks::JwksManager,
+        require_admin_scope, require_bearer, state::AuthState,
     };
     use vmcp_server::ProxyServer;
     use vmcp_watch::spawn_file_watcher;
+
+    use crate::api_v1::{self, ApiV1State};
+    use crate::registry_reload::{spawn_registry_watcher, RegistryReloadHandle};
 
     let cfg = &ctx.cfg;
     info!(host = %cfg.host, port = cfg.port, "vmcp starting");
@@ -170,10 +175,9 @@ async fn serve_http(
 
     let vmcp_server = ctx.vmcp_server.clone();
     let pool = ctx.pool.clone();
+    let skills = ctx.skills.clone();
     #[cfg(feature = "admin")]
     let schema_swap = ctx.schema_swap.clone();
-    #[cfg(feature = "admin")]
-    let skills = ctx.skills.clone();
     #[cfg(feature = "admin")]
     let bus = ctx.bus.clone();
 
@@ -283,8 +287,9 @@ async fn serve_http(
     }
     let rmcp_config =
         StreamableHttpServerConfig::default().with_allowed_hosts(allowed_hosts.clone());
+    let vmcp_server_for_mcp = vmcp_server.clone();
     let rmcp_service = StreamableHttpService::new(
-        move || Ok(vmcp_server.clone()),
+        move || Ok(vmcp_server_for_mcp.clone()),
         LocalSessionManager::default().into(),
         rmcp_config,
     );
@@ -323,6 +328,55 @@ async fn serve_http(
         .merge(auth_router(auth_state.clone()))
         .route("/health", get(|| async { "ok" }))
         .nest(&cfg.mcp_path, mcp_router);
+
+    // Registry hot-reload (file watcher + /api/v1/upstreams/reload).
+    let reload_handle = RegistryReloadHandle::new(
+        ctx.cfg.clone(),
+        pool.clone(),
+        skills.clone(),
+        vmcp_server.clone(),
+    );
+    let _registry_watcher = {
+        let parent_ok = cfg
+            .registry_path
+            .parent()
+            .map(|p| p.as_os_str().is_empty() || p.exists())
+            .unwrap_or(true);
+        if parent_ok {
+            match spawn_registry_watcher(reload_handle.clone(), cfg.registry_path.clone()) {
+                Ok(w) => Some(w),
+                Err(e) => {
+                    error!(error = %e, "failed to start registry watcher; hot-reload disabled");
+                    None
+                }
+            }
+        } else {
+            error!(
+                path = %cfg.registry_path.display(),
+                "registry file's parent dir is missing; hot-reload disabled"
+            );
+            None
+        }
+    };
+
+    // Operator control-plane (Bearer + mcp:admin). Parallel to `/admin` Basic SPA.
+    if cfg.auth.enabled {
+        let reload = reload_handle.clone();
+        let pool_status = reload_handle.pool();
+        let api_state = ApiV1State::new(auth_state.clone(), cfg.auth.tokens_file.clone())
+            .with_reload(std::sync::Arc::new(move || {
+                let reload = reload.clone();
+                Box::pin(async move { reload.reload().await })
+            }))
+            .with_pool(pool_status);
+        let api_router = api_v1::router(api_state)
+            .layer(middleware::from_fn(require_admin_scope))
+            .layer(middleware::from_fn_with_state(
+                auth_state.clone(),
+                require_bearer,
+            ));
+        app = app.nest("/api/v1", api_router);
+    }
 
     #[cfg(feature = "admin")]
     {

@@ -142,6 +142,14 @@ pub fn valid_id(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// OAuth/static scope `mcp:admin` — required for `/api/v1` control-plane.
+pub const SCOPE_ADMIN: &str = "mcp:admin";
+
+/// Space-separated OAuth scope string contains `needle` as a whole token.
+pub fn scope_contains(scope: &str, needle: &str) -> bool {
+    scope.split_whitespace().any(|s| s == needle)
+}
+
 /// Generate a fresh eternal token entry. `client_id` is derived from `name`
 /// (validated); `scope` defaults to `mcp:use`.
 pub fn generate_entry(name: &str, scope: Option<&str>) -> Result<StaticTokenEntry> {
@@ -163,41 +171,29 @@ pub fn generate_entry(name: &str, scope: Option<&str>) -> Result<StaticTokenEntr
     })
 }
 
-/// Append `entry` to the JSON-array token file atomically (tmp + rename),
-/// creating the parent dir if needed. Reads the existing array first; if it's
-/// present but malformed this FAILS LOUDLY rather than clobbering tokens. On
-/// unix the file gets `0600` perms (it holds bearer secrets).
-///
-/// Concurrent `pre-reg` runs are not supported (last writer wins on rename);
-/// the CLI is operator-driven and run one at a time.
-pub fn append_atomic(path: &Path, entry: &StaticTokenEntry) -> Result<()> {
+/// Read the JSON-array token file. Missing/empty → empty vec. Malformed → error.
+pub fn read_entries(path: &Path) -> Result<Vec<StaticTokenEntry>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("read token file {}", path.display()))?;
+    if text.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    serde_json::from_str(&text).with_context(|| format!("parse token file {}", path.display()))
+}
+
+/// Atomically replace the whole token file (tmp + rename). Creates parent dirs.
+/// On unix the file gets `0600` perms.
+pub fn write_all_atomic(path: &Path, entries: &[StaticTokenEntry]) -> Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create token dir {}", parent.display()))?;
         }
     }
-
-    let mut entries: Vec<StaticTokenEntry> = if path.exists() {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("read token file {}", path.display()))?;
-        if text.trim().is_empty() {
-            Vec::new()
-        } else {
-            serde_json::from_str(&text).with_context(|| {
-                format!(
-                    "existing token file {} is malformed; refusing to overwrite",
-                    path.display()
-                )
-            })?
-        }
-    } else {
-        Vec::new()
-    };
-    entries.push(entry.clone());
-
-    let text = serde_json::to_string_pretty(&entries)?;
-    // pid-suffixed tmp so a stray concurrent run is less likely to collide.
+    let text = serde_json::to_string_pretty(entries)?;
     let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
     std::fs::write(&tmp, text.as_bytes()).with_context(|| format!("write {}", tmp.display()))?;
     set_secret_perms(&tmp);
@@ -205,6 +201,83 @@ pub fn append_atomic(path: &Path, entry: &StaticTokenEntry) -> Result<()> {
         .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()))?;
     set_secret_perms(path);
     Ok(())
+}
+
+/// Append `entry` to the JSON-array token file atomically (tmp + rename),
+/// creating the parent dir if needed. Reads the existing array first; if it's
+/// present but malformed this FAILS LOUDLY rather than clobbering tokens.
+///
+/// Concurrent `pre-reg` runs are not supported (last writer wins on rename);
+/// the CLI is operator-driven and run one at a time.
+pub fn append_atomic(path: &Path, entry: &StaticTokenEntry) -> Result<()> {
+    let mut entries = read_entries(path).with_context(|| {
+        format!(
+            "existing token file {} is malformed; refusing to overwrite",
+            path.display()
+        )
+    })?;
+    entries.push(entry.clone());
+    write_all_atomic(path, &entries)
+}
+
+/// True if any entry's scope includes [`SCOPE_ADMIN`].
+pub fn count_admin_entries(entries: &[StaticTokenEntry]) -> usize {
+    entries
+        .iter()
+        .filter(|e| scope_contains(&e.scope, SCOPE_ADMIN))
+        .count()
+}
+
+/// Remove the entry with `client_id`. Returns `Ok(true)` if something was
+/// removed. Refuses to remove the last `mcp:admin` token (`Ok(false)` is not
+/// used for that — returns [`RevokeError`]).
+pub fn revoke_by_client_id(path: &Path, client_id: &str) -> Result<RevokeOutcome> {
+    let mut entries = read_entries(path)?;
+    let idx = match entries.iter().position(|e| e.client_id == client_id) {
+        Some(i) => i,
+        None => return Ok(RevokeOutcome::NotFound),
+    };
+    let removing_admin = scope_contains(&entries[idx].scope, SCOPE_ADMIN);
+    if removing_admin && count_admin_entries(&entries) <= 1 {
+        return Ok(RevokeOutcome::LastAdmin);
+    }
+    entries.remove(idx);
+    write_all_atomic(path, &entries)?;
+    Ok(RevokeOutcome::Revoked)
+}
+
+/// Result of [`revoke_by_client_id`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevokeOutcome {
+    Revoked,
+    NotFound,
+    /// Would leave the file with zero `mcp:admin` tokens.
+    LastAdmin,
+}
+
+/// Redacted view for list APIs — never includes the full secret.
+#[derive(Debug, Clone, Serialize)]
+pub struct TokenListItem {
+    pub client_id: String,
+    pub name: Option<String>,
+    pub scope: String,
+    pub issued_at: DateTime<Utc>,
+    /// `vmcp_` + first 4 chars of the secret payload (or shorter if tiny).
+    pub token_prefix: String,
+}
+
+impl StaticTokenEntry {
+    pub fn to_list_item(&self) -> TokenListItem {
+        let rest = self.token.strip_prefix(TOKEN_PREFIX).unwrap_or(&self.token);
+        let head: String = rest.chars().take(4).collect();
+        TokenListItem {
+            client_id: self.client_id.clone(),
+            name: self.name.clone(),
+            scope: self.scope.clone(),
+            issued_at: self.issued_at,
+            token_prefix: format!("{TOKEN_PREFIX}{head}"),
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -362,5 +435,49 @@ mod tests {
             append_atomic(&f, &e).is_err(),
             "append must fail loudly on a malformed existing file"
         );
+    }
+
+    #[test]
+    fn scope_contains_splits_on_whitespace() {
+        assert!(scope_contains("mcp:use mcp:admin", SCOPE_ADMIN));
+        assert!(!scope_contains("mcp:use", SCOPE_ADMIN));
+        assert!(!scope_contains("mcp:adminx", SCOPE_ADMIN));
+    }
+
+    #[test]
+    fn revoke_by_client_id_and_last_admin_guard() {
+        let dir = TempDir::new();
+        let f = dir.path().join("tokens.json");
+        let admin = generate_entry("operator", Some(SCOPE_ADMIN)).unwrap();
+        let agent = generate_entry("agent", Some("mcp:use")).unwrap();
+        write_all_atomic(&f, &[admin.clone(), agent.clone()]).unwrap();
+
+        assert_eq!(
+            revoke_by_client_id(&f, "agent").unwrap(),
+            RevokeOutcome::Revoked
+        );
+        assert_eq!(read_entries(&f).unwrap().len(), 1);
+        assert_eq!(
+            revoke_by_client_id(&f, "operator").unwrap(),
+            RevokeOutcome::LastAdmin,
+            "must not delete the last mcp:admin"
+        );
+        assert_eq!(read_entries(&f).unwrap().len(), 1);
+        assert_eq!(
+            revoke_by_client_id(&f, "missing").unwrap(),
+            RevokeOutcome::NotFound
+        );
+    }
+
+    #[test]
+    fn list_item_redacts_secret() {
+        let e = generate_entry("ci", None).unwrap();
+        let item = e.to_list_item();
+        assert!(item.token_prefix.starts_with(TOKEN_PREFIX));
+        assert!(
+            item.token_prefix.len() < e.token.len(),
+            "prefix must be shorter than full token"
+        );
+        assert_ne!(item.token_prefix, e.token);
     }
 }

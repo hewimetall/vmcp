@@ -181,8 +181,7 @@ pub fn read_entries(path: &Path) -> Result<Vec<StaticTokenEntry>> {
     if text.trim().is_empty() {
         return Ok(Vec::new());
     }
-    serde_json::from_str(&text)
-        .with_context(|| format!("parse token file {}", path.display()))
+    serde_json::from_str(&text).with_context(|| format!("parse token file {}", path.display()))
 }
 
 /// Atomically replace the whole token file (tmp + rename). Creates parent dirs.

@@ -117,10 +117,13 @@ tools/list → CachedTool → sidecar overrides → ResolvedTool → GraphQL + t
 | GraphQL schema | `ArcSwap` + `swap_schema` | Атомарная подмена |
 | Skills | Admin CRUD → reload | Без рестарта |
 | Static tokens | `vmcp-watch` на `tokens_file` | Hot-reload после rename |
+| **Registry (`registry.json`)** | `vmcp-watch` + `POST /api/v1/upstreams/reload` | Add/remove/replace upstreams, rebuild schema, без rolling restart |
 | Upstream prompts | `prompts/list_changed` → `refresh_prompts` | Кэш + forward клиентам |
-| Upstream tools | `tools/list_changed` | Пока forward клиентам; `detect_drift`/`swap_schema` — задел под drift-handler |
+| Upstream tools | `tools/list_changed` | Пока forward клиентам; `refresh_tools` есть в пуле — drift→schema hook ещё не подключён |
 
-`vmcp-watch` — общий file-watcher (parent dir + фильтр по имени, переживает tmp→rename). Сейчас висит на `tokens_file`; тот же примитив — под registry/skills.
+`vmcp-watch` — общий file-watcher (parent dir + фильтр по имени, переживает tmp→rename). Висит на `tokens_file` и на `registry_path`.
+
+Operator status: `GET /api/v1/upstreams` (Bearer `mcp:admin`). Legacy `GET /admin/api/servers` без изменений.
 
 ---
 

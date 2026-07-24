@@ -25,6 +25,10 @@ use std::path::{Path, PathBuf};
 
 use notify::{recommended_watcher, Event, RecommendedWatcher, RecursiveMode, Watcher};
 
+/// Re-export so callers can name the watcher guard type without a direct
+/// `notify` dependency.
+pub use notify::RecommendedWatcher as FileWatcher;
+
 /// Start watching `path` for changes; invoke `cb` on every change that touches
 /// it. The returned [`RecommendedWatcher`] MUST be kept alive for as long as
 /// you want events — dropping it silently stops the watch. Bind it like

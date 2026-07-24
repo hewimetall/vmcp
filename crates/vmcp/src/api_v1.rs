@@ -21,6 +21,7 @@ use vmcp_auth::static_tokens::{
     self, generate_entry, read_entries, revoke_by_client_id, RevokeOutcome, SCOPE_ADMIN,
 };
 use vmcp_auth::AuthState;
+use vmcp_upstream::UpstreamPool;
 
 /// Shared state for `/api/v1` handlers.
 #[derive(Clone)]
@@ -30,13 +31,13 @@ pub struct ApiV1State {
     pub tokens_write_lock: Arc<Mutex<()>>,
     /// Optional registry reconcile hook (Phase 2). `None` → upstreams reload 503.
     pub reload_registry: Option<RegistryReloader>,
+    pub pool: Option<Arc<UpstreamPool>>,
 }
 
 /// Async callback that reconciles `registry.json` into the live pool/schema.
 pub type RegistryReloader = Arc<
-    dyn Fn() -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = anyhow::Result<Value>> + Send>,
-        > + Send
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Value>> + Send>>
+        + Send
         + Sync,
 >;
 
@@ -47,11 +48,17 @@ impl ApiV1State {
             tokens_file,
             tokens_write_lock: Arc::new(Mutex::new(())),
             reload_registry: None,
+            pool: None,
         }
     }
 
     pub fn with_reload(mut self, reload: RegistryReloader) -> Self {
         self.reload_registry = Some(reload);
+        self
+    }
+
+    pub fn with_pool(mut self, pool: Arc<UpstreamPool>) -> Self {
+        self.pool = Some(pool);
         self
     }
 }
@@ -206,26 +213,29 @@ async fn delete_token(
 }
 
 async fn list_upstreams(State(s): State<ApiV1State>) -> impl IntoResponse {
-    // Phase 2 fills this via reload handle / pool snapshot. Until then, point
-    // operators at reload or return empty when no reloader is wired.
-    if s.reload_registry.is_none() {
+    let Some(pool) = s.pool.as_ref() else {
         return (
-            StatusCode::OK,
-            Json(json!({
-                "upstreams": [],
-                "note": "registry reload not wired; POST /api/v1/upstreams/reload unavailable"
-            })),
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "upstream pool not available" })),
         )
             .into_response();
-    }
-    (
-        StatusCode::OK,
-        Json(json!({
-            "upstreams": [],
-            "note": "use POST /api/v1/upstreams/reload; detailed status lands with pool snapshot"
-        })),
-    )
-        .into_response()
+    };
+    let upstreams: Vec<Value> = pool
+        .status_snapshot()
+        .into_iter()
+        .map(|u| {
+            json!({
+                "name": u.name,
+                "description": u.description,
+                "transport": u.transport,
+                "connected": u.connected,
+                "tool_count": u.tool_count,
+                "prompt_count": u.prompt_count,
+                "last_error": u.last_error,
+            })
+        })
+        .collect();
+    (StatusCode::OK, Json(json!({ "upstreams": upstreams }))).into_response()
 }
 
 async fn reload_upstreams(State(s): State<ApiV1State>) -> impl IntoResponse {

@@ -119,6 +119,38 @@ curl -H "Authorization: Bearer vmcp_…" https://gateway.example.com/mcp
 
 Не истекают (revoke = удали строку), hot-reload без рестарта, OAuth работает параллельно.
 
+Для operator/k8s удобнее HTTP API (см. ниже), чем править файл вручную. Scope **`mcp:admin`** нужен для control-plane; обычным агентам выдавайте `mcp:use` (или более узкие scopes позже).
+
+---
+
+## Operator API `/api/v1` (Bearer)
+
+Параллельно `/admin` (HTTP Basic). Automation ходит сюда с static bearer, у которого в `scope` есть **`mcp:admin`**.
+
+Bootstrap:
+
+```bash
+vmcp pre-reg --name operator --scope mcp:admin --out ./tokens.json
+```
+
+| Method | Path | Описание |
+| ------ | ---- | -------- |
+| `GET` | `/api/v1/tokens` | Список без полного секрета (`token_prefix`) |
+| `POST` | `/api/v1/tokens` | `{ "name", "scope"? }` → полный `token` **один раз**; duplicate `name` → 409 |
+| `DELETE` | `/api/v1/tokens/:client_id` | Revoke; нельзя удалить последний `mcp:admin` → 400 |
+| `GET` | `/api/v1/upstreams` | Status live pool |
+| `POST` | `/api/v1/upstreams/reload` | Reconcile `registry.json` без рестарта |
+
+```bash
+curl -H "Authorization: Bearer $OPERATOR_TOKEN" \
+  -H 'content-type: application/json' \
+  https://gateway.example.com/api/v1/tokens \
+  -d '{"name":"agent-a","scope":"mcp:use"}'
+```
+
+Без Bearer → 401; Bearer с `mcp:use` (без `mcp:admin`) → 403.  
+`/admin` SPA + Basic **не менялись**.
+
 ---
 
 ## DCR clients (переживают restart)

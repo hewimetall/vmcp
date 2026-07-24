@@ -485,6 +485,152 @@ impl UpstreamPool {
     pub fn bus(&self) -> Arc<Bus> {
         self.bus.clone()
     }
+
+    /// Snapshot of live sessions for operator status APIs.
+    pub fn status_snapshot(&self) -> Vec<UpstreamStatus> {
+        let mut out: Vec<_> = self
+            .sessions
+            .iter()
+            .map(|kv| {
+                let s = kv.value();
+                UpstreamStatus {
+                    name: kv.key().clone(),
+                    description: s.spec.description.clone(),
+                    transport: format!("{:?}", s.spec.transport).to_ascii_lowercase(),
+                    connected: s.connected.load(Ordering::Relaxed),
+                    tool_count: s.resolved.load().len(),
+                    prompt_count: s.prompts.load().len(),
+                    last_error: None,
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    /// Current registry specs held by live sessions (for reconcile diffs).
+    pub fn specs_snapshot(&self) -> Vec<UpstreamSpec> {
+        let mut out: Vec<_> = self
+            .sessions
+            .iter()
+            .map(|kv| kv.value().spec.clone())
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    /// Cancel and remove one upstream. Missing name is a no-op.
+    pub async fn remove(&self, name: &str) {
+        let Some((_, sess)) = self.sessions.remove(name) else {
+            return;
+        };
+        let mut guard = sess.client.lock().await;
+        if let Some(c) = guard.take() {
+            if let Err(e) = c.cancel().await {
+                warn!(upstream = %name, error = %e, "upstream cancel failed on remove");
+            }
+        }
+        sess.connected.store(false, Ordering::Relaxed);
+        info!(upstream = %name, "upstream removed from pool");
+    }
+
+    /// Insert or replace a live session (caller already spawned it).
+    pub async fn upsert(&self, name: String, sess: UpstreamSession) {
+        if self.sessions.contains_key(&name) {
+            self.remove(&name).await;
+        }
+        self.sessions.insert(name.clone(), Arc::new(sess));
+        info!(upstream = %name, "upstream upserted into pool");
+    }
+
+    /// Re-run `tools/list` + sidecar merge for one upstream (list_changed path).
+    pub async fn refresh_tools(
+        &self,
+        server: &str,
+        spec_dir: Option<&std::path::Path>,
+    ) -> Result<()> {
+        let sess = self
+            .sessions
+            .get(server)
+            .ok_or_else(|| anyhow!("unknown upstream: {server}"))?
+            .clone();
+        if !sess.connected.load(Ordering::Relaxed) {
+            return Err(anyhow!("upstream '{server}' is disconnected"));
+        }
+        let _guard = sess.call_lock.lock().await;
+        let client_guard = sess.client.lock().await;
+        let client = client_guard
+            .as_ref()
+            .ok_or_else(|| anyhow!("upstream '{server}' has no client"))?;
+
+        let live_tools = tokio::time::timeout(self.call_timeout, client.list_all_tools())
+            .await
+            .map_err(|_| anyhow!("upstream '{server}' tools/list timed out"))?
+            .with_context(|| format!("upstream '{server}' tools/list failed"))?;
+
+        let sidecar = resolve_sidecar(&sess.spec, spec_dir)?;
+        let cached: Vec<CachedTool> = live_tools
+            .iter()
+            .map(|t| CachedTool {
+                name: t.name.to_string(),
+                description: t.description.as_ref().map(|s| s.to_string()),
+                input_schema: serde_json::to_value(&t.input_schema)
+                    .unwrap_or_else(|_| serde_json::json!({"type": "object"})),
+                read_only: tool_read_only_hint(t),
+                task_support: tool_task_support_hint(t),
+            })
+            .collect();
+        let (merged, _audit) = apply_sidecar(cached, sidecar.as_ref());
+        let resolved: Vec<ResolvedTool> = merged
+            .into_iter()
+            .map(|c| ResolvedTool {
+                server: server.to_string(),
+                name: c.name,
+                description: c.description,
+                input_schema: c.input_schema,
+                read_only: c.read_only,
+                task_support: c.task_support,
+            })
+            .collect();
+        info!(
+            upstream = %server,
+            count = resolved.len(),
+            "refreshed upstream tools cache"
+        );
+        sess.tools.store(Arc::new(live_tools));
+        sess.resolved.store(Arc::new(resolved));
+        Ok(())
+    }
+
+    /// Spawn timeout used for reconcile add/replace.
+    pub fn call_timeout(&self) -> Duration {
+        self.call_timeout
+    }
+}
+
+/// Operator-facing upstream status row.
+#[derive(Debug, Clone)]
+pub struct UpstreamStatus {
+    pub name: String,
+    pub description: Option<String>,
+    pub transport: String,
+    pub connected: bool,
+    pub tool_count: usize,
+    pub prompt_count: usize,
+    pub last_error: Option<String>,
+}
+
+/// Compare fields that require a session replace when they change.
+pub fn spec_requires_respawn(a: &UpstreamSpec, b: &UpstreamSpec) -> bool {
+    a.transport != b.transport
+        || a.url != b.url
+        || a.bearer != b.bearer
+        || a.command != b.command
+        || a.args != b.args
+        || a.env != b.env
+        || a.cwd != b.cwd
+        || a.sidecar_spec != b.sidecar_spec
+        || a.enabled != b.enabled
 }
 
 /// Spawn a single upstream. Public so tests can do one-shot spawns.

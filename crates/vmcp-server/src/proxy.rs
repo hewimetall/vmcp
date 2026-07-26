@@ -90,7 +90,7 @@ impl ServerHandler for ProxyServer {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _ctx: RequestContext<RoleServer>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let (server, tool) = request.name.split_once(NAME_SEP).ok_or_else(|| {
             McpError::invalid_params(
@@ -101,6 +101,20 @@ impl ServerHandler for ProxyServer {
                 None,
             )
         })?;
+
+        if let Some(policy) = crate::scope_policy_from_request_context(&ctx) {
+            let is_write = self
+                .pool
+                .resolved(server)
+                .and_then(|tools| tools.into_iter().find(|t| t.name == tool))
+                .map(|t| !t.read_only)
+                .unwrap_or(true);
+            if let Err(msg) = policy.authorize(server, tool, is_write) {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "forbidden: {msg}"
+                ))]));
+            }
+        }
 
         let args = match request.arguments {
             Some(obj) => Value::Object(obj),

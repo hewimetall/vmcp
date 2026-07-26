@@ -65,7 +65,14 @@ async fn as_metadata(State(s): State<AuthState>) -> Json<AuthorizationServerMeta
         grant_types_supported: vec!["authorization_code"],
         code_challenge_methods_supported: vec!["S256"],
         token_endpoint_auth_methods_supported: vec!["none"],
-        scopes_supported: vec![s.default_scope.clone()],
+        scopes_supported: vec![
+            s.default_scope.clone(),
+            "mcp:admin".into(),
+            "mcp:read".into(),
+            "mcp:write".into(),
+            "upstream:<name>".into(),
+            "deny:<server>.<tool>".into(),
+        ],
         resource_indicators_supported: true,
     })
 }
@@ -115,8 +122,31 @@ async fn register_client(
     State(s): State<AuthState>,
     Json(req): Json<ClientRegistrationRequest>,
 ) -> Result<Json<ClientRegistrationResponse>, AuthError> {
+    if !s.dcr.enabled {
+        return Err(AuthError::Forbidden(
+            "dynamic client registration is disabled".into(),
+        ));
+    }
     if req.redirect_uris.is_empty() {
         return Err(AuthError::BadRequest("redirect_uris required".into()));
+    }
+    for uri in &req.redirect_uris {
+        if !s.dcr.redirect_uri_allowed(uri) {
+            return Err(AuthError::Forbidden(format!(
+                "redirect_uri not allowed by policy: {uri}"
+            )));
+        }
+    }
+
+    // Normalize + validate scope before taking the registration lock.
+    let scope = normalize_oauth_scope(req.scope.as_deref(), &s.default_scope)?;
+
+    let _reg_lock = s.dcr_register_lock.lock().await;
+    if s.dcr.max_clients > 0 && (s.clients.len() as u64) >= s.dcr.max_clients {
+        return Err(AuthError::Forbidden(format!(
+            "DCR client limit reached ({})",
+            s.dcr.max_clients
+        )));
     }
     let client_id = format!("vmcp-{}", Uuid::new_v4());
     let now = Utc::now();
@@ -139,7 +169,7 @@ async fn register_client(
         name,
         grant_types: grant_types.clone(),
         response_types: response_types.clone(),
-        scope: req.scope.clone(),
+        scope: Some(scope.clone()),
         issued_at: now,
     };
     // Persist before the hot-cache insert so a failed write never leaves Cursor
@@ -151,6 +181,13 @@ async fn register_client(
     }
     s.clients.insert(client_id.clone(), info);
 
+    tracing::info!(
+        client_id = %client_id,
+        client_name = ?req.client_name,
+        redirect_uris = ?req.redirect_uris,
+        "DCR client registered"
+    );
+
     Ok(Json(ClientRegistrationResponse {
         client_id,
         redirect_uris: req.redirect_uris,
@@ -158,9 +195,35 @@ async fn register_client(
         token_endpoint_auth_method: req.token_endpoint_auth_method,
         grant_types,
         response_types,
-        scope: req.scope.or_else(|| Some(s.default_scope.clone())),
+        scope: Some(scope),
         client_id_issued_at: now.timestamp(),
     }))
+}
+
+/// Drop `mcp:admin` from DCR/OAuth scopes (G30). Admin is only for
+/// pre-reg / static operator tokens.
+fn sanitize_dcr_scope(scope: &str) -> String {
+    scope
+        .split_whitespace()
+        .filter(|t| *t != "mcp:admin")
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Sanitize + validate OAuth scope for DCR/authorize. Empty after strip → default.
+fn normalize_oauth_scope(
+    requested: Option<&str>,
+    default_scope: &str,
+) -> Result<String, AuthError> {
+    let raw = requested.unwrap_or(default_scope);
+    let cleaned = sanitize_dcr_scope(raw);
+    let scope = if cleaned.is_empty() {
+        default_scope.to_string()
+    } else {
+        cleaned
+    };
+    crate::scopes::validate_scope_string(&scope).map_err(AuthError::BadRequest)?;
+    Ok(scope)
 }
 
 #[derive(Debug, Deserialize)]
@@ -198,8 +261,8 @@ async fn authorize(
     if !client.redirect_uris.iter().any(|r| r == &p.redirect_uri) {
         return Err(AuthError::BadRequest("redirect_uri mismatch".into()));
     }
-    let scope = p.scope.clone().unwrap_or_else(|| s.default_scope.clone());
     drop(client);
+    let scope = normalize_oauth_scope(p.scope.as_deref(), &s.default_scope)?;
 
     let consent = ConsentSession {
         id: format!("cs-{}", Uuid::new_v4()),
@@ -549,5 +612,137 @@ mod tests {
         assert_eq!(html_escape("<script>"), "&lt;script&gt;");
         assert_eq!(html_escape("a&b"), "a&amp;b");
         assert_eq!(html_escape("\"x\""), "&quot;x&quot;");
+    }
+
+    fn test_auth_state() -> AuthState {
+        use crate::jwks::JwksManager;
+        let jwks = JwksManager::new_with_fresh("kid").unwrap();
+        AuthState::new(
+            jwks,
+            "https://iss.example",
+            "https://iss.example/mcp",
+            3600,
+            "$argon2id$v=19$m=19456,t=2,p=1$YWFhYWFhYWFhYWFhYWFhYQ$dG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4",
+        )
+    }
+
+    async fn post_register(
+        state: AuthState,
+        body: serde_json::Value,
+    ) -> axum::http::Response<axum::body::Body> {
+        use axum::body::Body;
+        use tower::ServiceExt;
+        build_router(state)
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/register")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn dcr_disabled_forbids_register() {
+        use crate::state::DcrPolicy;
+        let state = test_auth_state().with_dcr_policy(DcrPolicy {
+            enabled: false,
+            max_clients: 0,
+            redirect_uri_allowlist: vec![],
+        });
+        let resp = post_register(
+            state,
+            serde_json::json!({
+                "client_name": "x",
+                "redirect_uris": ["http://127.0.0.1/cb"]
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn dcr_allowlist_rejects_foreign_redirect() {
+        use crate::state::DcrPolicy;
+        let state = test_auth_state().with_dcr_policy(DcrPolicy {
+            enabled: true,
+            max_clients: 10,
+            redirect_uri_allowlist: vec!["http://127.0.0.1".into()],
+        });
+        let resp = post_register(
+            state,
+            serde_json::json!({
+                "client_name": "x",
+                "redirect_uris": ["https://evil.example/cb"]
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn dcr_max_clients_enforced() {
+        use crate::state::DcrPolicy;
+        let state = test_auth_state().with_dcr_policy(DcrPolicy {
+            enabled: true,
+            max_clients: 1,
+            redirect_uri_allowlist: vec![],
+        });
+        let ok = post_register(
+            state.clone(),
+            serde_json::json!({
+                "client_name": "one",
+                "redirect_uris": ["http://127.0.0.1/cb"]
+            }),
+        )
+        .await;
+        assert_eq!(ok.status(), StatusCode::OK);
+        let denied = post_register(
+            state,
+            serde_json::json!({
+                "client_name": "two",
+                "redirect_uris": ["http://127.0.0.1/cb2"]
+            }),
+        )
+        .await;
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn dcr_admin_only_scope_falls_back_to_default() {
+        let state = test_auth_state();
+        let resp = post_register(
+            state,
+            serde_json::json!({
+                "client_name": "adminish",
+                "redirect_uris": ["http://127.0.0.1/cb"],
+                "scope": "mcp:admin"
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["scope"], "mcp:use");
+    }
+
+    #[tokio::test]
+    async fn dcr_rejects_malformed_scope_tokens() {
+        let state = test_auth_state();
+        let resp = post_register(
+            state,
+            serde_json::json!({
+                "client_name": "bad",
+                "redirect_uris": ["http://127.0.0.1/cb"],
+                "scope": "mcp:use deny:broken"
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }

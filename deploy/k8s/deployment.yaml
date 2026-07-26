@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vmcp
+  namespace: vmcp
+  labels:
+    app: vmcp
+spec:
+  replicas: 1  # HA not supported (RWO PVC + in-memory pool) — see README
+  selector:
+    matchLabels:
+      app: vmcp
+  template:
+    metadata:
+      labels:
+        app: vmcp
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: vmcp
+          # Build/push from this PR branch until a release includes /api/v1.
+          # Example: docker build -t ghcr.io/<org>/vmcp:edge . && docker push ...
+          image: REPLACE_WITH_BUILT_IMAGE
+          imagePullPolicy: Always
+          args: ["serve", "--config", "/config/vmcp.toml"]
+          ports:
+            - name: http
+              containerPort: 8765
+          env:
+            - name: VMCP_HOST
+              value: "0.0.0.0"
+            - name: VMCP_PUBLIC_BASE_URL
+              value: "https://gateway.example.com"
+            - name: VMCP_AUTH__ISSUER
+              value: "https://gateway.example.com"
+            - name: VMCP_AUTH__MASTER_PASSWORD_ARGON2
+              valueFrom:
+                secretKeyRef:
+                  name: vmcp-auth
+                  key: master_password_argon2
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: data-registry
+              mountPath: /data/registry.json
+              subPath: registry.json
+              readOnly: true
+            - name: data-specs
+              mountPath: /data/specs
+              readOnly: true
+            - name: data-skills
+              mountPath: /data/skills
+              readOnly: true
+            - name: state
+              mountPath: /state
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: vmcp-config
+            items:
+              - key: vmcp.toml
+                path: vmcp.toml
+        - name: data-registry
+          configMap:
+            name: vmcp-config
+            items:
+              - key: registry.json
+                path: registry.json
+        - name: data-specs
+          emptyDir: {}
+        - name: data-skills
+          emptyDir: {}
+        - name: state
+          persistentVolumeClaim:
+            claimName: vmcp-state
+        - name: tmp
+          emptyDir: {}

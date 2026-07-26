@@ -1,0 +1,47 @@
+# PUBLIC surface — OAuth + MCP + health. Do NOT expose /api/v1 or /admin here.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: vmcp-public
+  namespace: vmcp
+spec:
+  parentRefs:
+    - name: gateway
+      namespace: gateway-system
+  hostnames:
+    - gateway.example.com
+  rules:
+    - matches:
+        - path: { type: PathPrefix, value: /mcp }
+        - path: { type: PathPrefix, value: /mcp-proxy }
+        - path: { type: PathPrefix, value: /authorize }
+        - path: { type: PathPrefix, value: /consent }
+        - path: { type: PathPrefix, value: /token }
+        - path: { type: PathPrefix, value: /register }
+        - path: { type: PathPrefix, value: /.well-known }
+        - path: { type: Exact, value: /health }
+        - path: { type: Exact, value: /ready }
+      backendRefs:
+        - name: vmcp
+          port: 8765
+---
+# INTERNAL control-plane — Bearer mcp:admin (+ /admin Basic). Bind to an
+# internal Gateway / private hostname. mcp:admin also grants full MCP access.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: vmcp-internal
+  namespace: vmcp
+spec:
+  parentRefs:
+    - name: gateway-internal
+      namespace: gateway-system
+  hostnames:
+    - vmcp-internal.example.svc
+  rules:
+    - matches:
+        - path: { type: PathPrefix, value: /api/v1 }
+        - path: { type: PathPrefix, value: /admin }
+      backendRefs:
+        - name: vmcp
+          port: 8765

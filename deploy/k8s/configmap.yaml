@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vmcp-config
+  namespace: vmcp
+data:
+  vmcp.toml: |
+    host = "0.0.0.0"
+    port = 8765
+    public_base_url = "https://gateway.example.com"
+    registry_path = "/data/registry.json"
+    lock_path = "/state/tools.lock.json"
+    spec_dir = "/data/specs"
+    skills_dir = "/data/skills"
+
+    [gql]
+    max_depth = 10
+    max_complexity = 2000
+
+    [upstream]
+    spawn_timeout_ms = 30000
+    call_timeout_ms = 60000
+
+    [auth]
+    enabled = true
+    issuer = "https://gateway.example.com"
+    # Set via Secret env VMCP_AUTH__MASTER_PASSWORD_ARGON2 (do NOT put REPLACE_ME here).
+    master_password_argon2 = ""
+    tokens_file = "/state/tokens.json"
+    clients_db_path = "/state/clients.db"
+    jwks_private_key_pem_path = "/state/jwks.pem"
+    dcr_enabled = true
+    dcr_max_clients = 256
+    # dcr_redirect_uri_allowlist = ["http://127.0.0.1", "http://localhost", "cursor://"]
+
+    [recorder]
+    sessions_dir = "/state/sessions"
+
+    [tasks]
+    enabled = true
+    db_path = "/state/tasks.db"
+    max_concurrent = 16
+
+  registry.json: |
+    {"upstreams": []}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vmcp-data-dirs
+  namespace: vmcp
+data:
+  # Placeholder so /data/specs and /data/skills exist (mount as subPaths).
+  .keep: ""

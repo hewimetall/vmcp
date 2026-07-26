@@ -19,7 +19,7 @@ use crate::types::{
     ConsentSession,
 };
 
-/// Auth configuration extracted from [`vmcp_config::AuthConfig`] + public URL.
+/// Runtime auth state built from gateway config (`auth.*` + public URL).
 #[derive(Clone)]
 pub struct AuthState {
     pub jwks: Arc<JwksManager>,
@@ -51,6 +51,82 @@ pub struct AuthState {
     /// flow is then the only way onto `/mcp`. Wrapped in `Arc` so `AuthState`
     /// stays `Clone` (the inner `ArcSwap` is not `Clone`).
     pub token_store: Option<Arc<StaticTokenStore>>,
+
+    /// Dynamic Client Registration policy (from `auth.dcr_*` config).
+    pub dcr: DcrPolicy,
+
+    /// Serializes `POST /register` so `dcr_max_clients` checks are atomic (G28).
+    pub dcr_register_lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+/// Limits for `POST /register`. Defaults match historical open registration.
+#[derive(Debug, Clone)]
+pub struct DcrPolicy {
+    pub enabled: bool,
+    /// `0` = unlimited.
+    pub max_clients: u64,
+    /// Prefix allowlist; empty = allow any redirect_uri.
+    pub redirect_uri_allowlist: Vec<String>,
+}
+
+impl Default for DcrPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_clients: 0,
+            redirect_uri_allowlist: Vec::new(),
+        }
+    }
+}
+
+impl DcrPolicy {
+    /// Whether `uri` is permitted by the allowlist.
+    ///
+    /// Entries that parse as URLs match on **exact host** + scheme. Port is
+    /// checked only when the allowlist entry specifies one. Path on the
+    /// allowlist entry (if not `/`) is a required prefix. Custom-scheme
+    /// prefixes like `cursor://` still use starts-with. Rejects
+    /// `http://127.0.0.1.evil/...` when allowlist has `http://127.0.0.1` (G27).
+    pub fn redirect_uri_allowed(&self, uri: &str) -> bool {
+        if self.redirect_uri_allowlist.is_empty() {
+            return true;
+        }
+        let Ok(parsed) = url::Url::parse(uri) else {
+            return false;
+        };
+        self.redirect_uri_allowlist.iter().any(|entry| {
+            if entry.is_empty() {
+                return false;
+            }
+            if let Ok(allowed) = url::Url::parse(entry) {
+                // `cursor://` parses with empty host — treat as scheme prefix.
+                if allowed.host_str().is_none() {
+                    return uri.starts_with(entry.as_str());
+                }
+                if parsed.scheme() != allowed.scheme() {
+                    return false;
+                }
+                if parsed.host_str() != allowed.host_str() {
+                    return false;
+                }
+                // Explicit port on allowlist → must match; otherwise any port OK.
+                if let Some(p) = allowed.port() {
+                    if parsed.port() != Some(p) {
+                        return false;
+                    }
+                }
+                let allow_path = allowed.path();
+                if allow_path.is_empty() || allow_path == "/" {
+                    return true;
+                }
+                let path = parsed.path();
+                return path == allow_path
+                    || path.starts_with(&format!("{}/", allow_path.trim_end_matches('/')));
+            }
+            // Unparseable allow entries: literal prefix.
+            uri.starts_with(entry.as_str())
+        })
+    }
 }
 
 impl AuthState {
@@ -75,7 +151,14 @@ impl AuthState {
             consents: Arc::new(DashMap::new()),
             client_store: None,
             token_store: None,
+            dcr: DcrPolicy::default(),
+            dcr_register_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
+    }
+
+    pub fn with_dcr_policy(mut self, dcr: DcrPolicy) -> Self {
+        self.dcr = dcr;
+        self
     }
 
     /// Attach a durable DCR client store and hydrate the in-memory cache.
@@ -292,5 +375,22 @@ mod tests {
             msg.contains(db.to_string_lossy().as_ref()),
             "error should include the db path: {msg}"
         );
+    }
+
+    #[test]
+    fn dcr_redirect_allowlist_host_match_not_prefix_host() {
+        let open = DcrPolicy::default();
+        assert!(open.redirect_uri_allowed("https://evil.example/cb"));
+
+        let locked = DcrPolicy {
+            enabled: true,
+            max_clients: 10,
+            redirect_uri_allowlist: vec!["http://127.0.0.1".into(), "cursor://".into()],
+        };
+        assert!(locked.redirect_uri_allowed("http://127.0.0.1:9999/cb"));
+        assert!(locked.redirect_uri_allowed("cursor://anysphere.cursor-mcp/oauth/callback"));
+        assert!(!locked.redirect_uri_allowed("https://evil.example/cb"));
+        // Prefix-host attack must fail (G27).
+        assert!(!locked.redirect_uri_allowed("http://127.0.0.1.evil.example/cb"));
     }
 }

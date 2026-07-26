@@ -105,6 +105,28 @@ pub fn claims_from_extensions(ext: &axum::http::Extensions) -> Option<&AccessTok
     ext.get::<AccessTokenClaims>()
 }
 
+/// After [`require_bearer`], reject unless claims.scope contains `mcp:admin`.
+/// Intended for `/api/v1/*` control-plane routes.
+pub async fn require_admin_scope(req: Request<Body>, next: Next) -> Response {
+    use crate::static_tokens::{scope_contains, SCOPE_ADMIN};
+
+    match claims_from_extensions(req.extensions()) {
+        Some(claims) if scope_contains(&claims.scope, SCOPE_ADMIN) => next.run(req).await,
+        Some(_) => (StatusCode::FORBIDDEN, "missing scope mcp:admin").into_response(),
+        None => unauthorized_plain("missing_bearer"),
+    }
+}
+
+fn unauthorized_plain(error: &str) -> Response {
+    let challenge = format!("Bearer error=\"{error}\"");
+    let mut resp = (StatusCode::UNAUTHORIZED, error.to_string()).into_response();
+    resp.headers_mut().insert(
+        header::WWW_AUTHENTICATE,
+        challenge.parse().expect("static header value"),
+    );
+    resp
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,5 +256,56 @@ mod tests {
         let resp = app(state).oneshot(bearer_req(&jwt)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(body_string(resp).await, "jwt-client");
+    }
+
+    fn admin_app(state: AuthState) -> Router {
+        Router::new()
+            .route("/api/v1/ping", post(echo_client_id))
+            .layer(axum::middleware::from_fn(require_admin_scope))
+            .layer(axum::middleware::from_fn_with_state(state, require_bearer))
+    }
+
+    fn admin_bearer_req(token: &str) -> Request<Body> {
+        Request::builder()
+            .uri("/api/v1/ping")
+            .method("POST")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn require_admin_scope_allows_mcp_admin_rejects_mcp_use() {
+        let dir = TempDir::new();
+        let file = dir.path().join("tokens.json");
+        let admin = static_tokens::generate_entry("op", Some(static_tokens::SCOPE_ADMIN)).unwrap();
+        let agent = static_tokens::generate_entry("agent", Some("mcp:use")).unwrap();
+        static_tokens::append_atomic(&file, &admin).unwrap();
+        static_tokens::append_atomic(&file, &agent).unwrap();
+        let state = state_with_store(&file);
+
+        let ok = admin_app(state.clone())
+            .oneshot(admin_bearer_req(&admin.token))
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+
+        let forbidden = admin_app(state.clone())
+            .oneshot(admin_bearer_req(&agent.token))
+            .await
+            .unwrap();
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
+
+        let missing = admin_app(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/ping")
+                    .method("POST")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
     }
 }

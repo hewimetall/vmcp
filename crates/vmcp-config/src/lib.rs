@@ -305,6 +305,22 @@ pub struct AuthConfig {
     /// Same idea as `[tasks].db_path`. Override via `VMCP_AUTH__CLIENTS_DB_PATH`.
     #[serde(default = "AuthConfig::default_clients_db_path")]
     pub clients_db_path: PathBuf,
+    /// When false, `POST /register` returns 403 (pre-reg / static tokens still work).
+    #[serde(default = "AuthConfig::default_dcr_enabled")]
+    pub dcr_enabled: bool,
+    /// Max durable DCR clients (`0` = unlimited). Excess registrations → 403.
+    #[serde(default)]
+    pub dcr_max_clients: u64,
+    /// If non-empty, each `redirect_uri` must start with one of these prefixes
+    /// (e.g. `http://127.0.0.1`, `cursor://`). Empty = allow any URI (legacy).
+    #[serde(default)]
+    pub dcr_redirect_uri_allowlist: Vec<String>,
+    /// Optional PKCS#1 PEM path for the JWT signing key. When set, the key is
+    /// loaded at boot (or generated + written `0600` if missing) so access
+    /// tokens survive restarts. Unset = ephemeral in-memory JWKS (historical).
+    /// Override via `VMCP_AUTH__JWKS_PRIVATE_KEY_PEM_PATH`.
+    #[serde(default)]
+    pub jwks_private_key_pem_path: Option<PathBuf>,
 }
 
 impl AuthConfig {
@@ -323,6 +339,9 @@ impl AuthConfig {
     fn default_clients_db_path() -> PathBuf {
         PathBuf::from("state/clients.db")
     }
+    fn default_dcr_enabled() -> bool {
+        true
+    }
 }
 
 impl Default for AuthConfig {
@@ -336,6 +355,10 @@ impl Default for AuthConfig {
             issuer: None,
             tokens_file: None,
             clients_db_path: Self::default_clients_db_path(),
+            dcr_enabled: Self::default_dcr_enabled(),
+            dcr_max_clients: 0,
+            dcr_redirect_uri_allowlist: Vec::new(),
+            jwks_private_key_pem_path: None,
         }
     }
 }

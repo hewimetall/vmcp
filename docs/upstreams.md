@@ -23,6 +23,17 @@ Env: `VMCP_REGISTRY_PATH`, `VMCP_SPEC_DIR`, `VMCP_LOCK_PATH`, `VMCP_SKILLS_DIR`,
 Демо-стенд: [`demo/vmcp.toml`](../demo/vmcp.toml) + [`demo/README.md`](../demo/README.md)
 (paths и `[upstream]` timeouts уже в toml — не задавай частичный `VMCP_UPSTREAM__*`).
 
+### Ограничения (operator)
+
+| Тема | Поведение |
+| ---- | --------- |
+| Skills с диска | Hot-reload **нет** — правки YAML требуют restart, либо Admin Skills CRUD (G07) |
+| Stdio в cluster image | Runtime image без Node/`uv` — в k8s используй **HTTP** upstreams (G08) |
+| HA | Один replica + RWO PVC; pool/schema in-memory — multi-replica **не** поддерживается (G12) |
+| Health | `connected` обновляется по RPC outcome; idle dead upstream без вызовов может долго казаться up (G24) |
+| `${ENV}` | Missing var → **ошибка** load registry (strict) |
+| Размер registry | Max **256** upstreams; duplicate `name` → ошибка |
+
 ---
 
 ## 1. Upstream-сервисы (`registry.json`)
@@ -117,10 +128,15 @@ tools/list → CachedTool → sidecar overrides → ResolvedTool → GraphQL + t
 | GraphQL schema | `ArcSwap` + `swap_schema` | Атомарная подмена |
 | Skills | Admin CRUD → reload | Без рестарта |
 | Static tokens | `vmcp-watch` на `tokens_file` | Hot-reload после rename |
+| **Registry (`registry.json`)** | recursive watch + mtime poll + `POST /api/v1/upstreams/reload` | Add/remove/replace upstreams, rebuild schema. В k8s CM надёжнее вызывать API reload после apply |
 | Upstream prompts | `prompts/list_changed` → `refresh_prompts` | Кэш + forward клиентам |
-| Upstream tools | `tools/list_changed` | Пока forward клиентам; `detect_drift`/`swap_schema` — задел под drift-handler |
+| Upstream tools | `tools/list_changed` → `refresh_tools` + rebuild GraphQL | Кэш + schema + forward клиентам |
 
-`vmcp-watch` — общий file-watcher (parent dir + фильтр по имени, переживает tmp→rename). Сейчас висит на `tokens_file`; тот же примитив — под registry/skills.
+`vmcp-watch` — общий file-watcher (parent dir + фильтр по имени, переживает tmp→rename). Висит на `tokens_file` и на `registry_path`.
+
+Operator status: `GET /api/v1/upstreams` (Bearer `mcp:admin`) — `connected`, `tool_count`, `last_error`, `last_ok_unix_ms`.  
+Readiness probe: `GET /ready` (soft: если в registry есть enabled upstreams и ни один не `connected` → 503; `/health` остаётся liveness).  
+Legacy `GET /admin/api/servers` без изменений.
 
 ---
 

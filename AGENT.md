@@ -26,7 +26,7 @@ upstream MCP-серверы через GraphQL tool `query_graphql` по streama
 | Сборка | `cargo build --workspace` |
 | Юнит-тесты | `cargo test --workspace --lib` |
 | Admin coverage | `cargo llvm-cov -p vmcp-admin --lib --fail-under-lines 99 --ignore-filename-regex '(integration|ui_regression|pages)\.rs'` |
-| Server coverage | `cargo llvm-cov -p vmcp-server --lib --fail-under-lines 93 --ignore-filename-regex '(^|/)(otel_file|proxy|lib|recorder)\.rs$'` |
+| Server coverage | `cargo llvm-cov -p vmcp-server --lib --fail-under-lines 96 --ignore-filename-regex '(^|/)(otel_file|proxy|lib|recorder)\.rs$'` |
 | Coverage CI | `.github/workflows/coverage.yml` — gates выше + PR comment + LCOV + README % badges (`docs/badges/`) |
 | Sessions | JSON в `[recorder].sessions_dir` (`.registry/` + dumps) — см. [`docs/sessions.md`](docs/sessions.md) |
 | Upstream registry | `registry.json` + sidecars + skills/prompts — см. [`docs/upstreams.md`](docs/upstreams.md) |

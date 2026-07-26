@@ -18,13 +18,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use dashmap::DashMap;
 use parking_lot::Mutex;
 use rmcp::model::{
-    CancelTaskResult, CreateTaskResult, GetTaskResult, ListTasksResult, Task, TaskStatus,
+    CancelTaskResult, CreateTaskResult, GetTaskResult, ListTasksResult, LoggingLevel,
+    LoggingMessageNotificationParam, Task, TaskStatus,
 };
 use rusqlite::{params, Connection, OptionalExtension};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::sync::{Notify, Semaphore};
 use uuid::Uuid;
 
+use vmcp_notify::Bus;
 use vmcp_upstream::UpstreamPool;
 
 /// MCP tool name for the task-capable upstream proxy.
@@ -453,6 +455,7 @@ pub type TaskToolKey = (String, String);
 pub struct TaskRunner {
     store: Arc<TaskStore>,
     pool: Arc<UpstreamPool>,
+    bus: Arc<Bus>,
     sem: Arc<Semaphore>,
     /// Only these upstream tools may be invoked via `run_task`.
     allowed: Arc<std::sync::RwLock<HashSet<TaskToolKey>>>,
@@ -462,6 +465,7 @@ pub struct TaskRunner {
 impl TaskRunner {
     pub fn new(
         pool: Arc<UpstreamPool>,
+        bus: Arc<Bus>,
         db_path: PathBuf,
         allowlist: HashSet<TaskToolKey>,
         max_concurrent: usize,
@@ -472,6 +476,7 @@ impl TaskRunner {
         Ok(Self {
             store,
             pool,
+            bus,
             sem: Arc::new(Semaphore::new(max_concurrent.max(1))),
             allowed: Arc::new(std::sync::RwLock::new(allowlist)),
             db_path,
@@ -542,34 +547,86 @@ impl TaskRunner {
         let task_id = self.store.create(&owner, &server, &tool)?;
         let store = self.store.clone();
         let pool = self.pool.clone();
+        let bus = self.bus.clone();
         let sem = self.sem.clone();
         let id = task_id.clone();
-        let server_bg = server;
-        let tool_bg = tool;
+        let server_bg = server.clone();
+        let tool_bg = tool.clone();
+
+        publish_task_log(
+            &self.bus,
+            &task_id,
+            LoggingLevel::Info,
+            format!("task enqueued for {server}.{tool}"),
+            json!({ "status": "working", "server": server, "tool": tool }),
+        );
 
         tokio::spawn(async move {
             let _permit = match sem.acquire().await {
                 Ok(p) => p,
                 Err(_) => {
                     store.fail(&id, "task semaphore closed", None);
+                    publish_task_log(
+                        &bus,
+                        &id,
+                        LoggingLevel::Error,
+                        "task semaphore closed",
+                        json!({ "status": "failed" }),
+                    );
                     return;
                 }
             };
             if store.is_cancelled(&id) {
+                publish_task_log(
+                    &bus,
+                    &id,
+                    LoggingLevel::Warning,
+                    "task cancelled before upstream call",
+                    json!({ "status": "cancelled" }),
+                );
                 return;
             }
+            publish_task_log(
+                &bus,
+                &id,
+                LoggingLevel::Debug,
+                format!("calling upstream {server_bg}.{tool_bg}"),
+                json!({ "status": "working", "server": server_bg, "tool": tool_bg }),
+            );
             match pool.call(&server_bg, &tool_bg, args).await {
                 Ok(result) => {
                     let is_error = result.is_error.unwrap_or(false);
                     let payload = serde_json::to_value(&result).unwrap_or(Value::Null);
                     if is_error {
                         store.fail(&id, "upstream tool reported isError=true", Some(payload));
+                        publish_task_log(
+                            &bus,
+                            &id,
+                            LoggingLevel::Error,
+                            "upstream tool reported isError=true",
+                            json!({ "status": "failed", "server": server_bg, "tool": tool_bg }),
+                        );
                     } else {
                         store.complete(&id, payload, Some("Upstream tool completed.".into()));
+                        publish_task_log(
+                            &bus,
+                            &id,
+                            LoggingLevel::Info,
+                            "upstream tool completed",
+                            json!({ "status": "completed", "server": server_bg, "tool": tool_bg }),
+                        );
                     }
                 }
                 Err(e) => {
-                    store.fail(&id, format!("upstream call failed: {e:#}"), None);
+                    let msg = format!("upstream call failed: {e:#}");
+                    store.fail(&id, msg.clone(), None);
+                    publish_task_log(
+                        &bus,
+                        &id,
+                        LoggingLevel::Error,
+                        msg,
+                        json!({ "status": "failed", "server": server_bg, "tool": tool_bg }),
+                    );
                 }
             }
         });
@@ -583,6 +640,33 @@ impl TaskRunner {
             });
         Ok(CreateTaskResult::new(task))
     }
+}
+
+/// Emit MCP `notifications/message` for task lifecycle (forwarded to clients).
+fn publish_task_log(
+    bus: &Bus,
+    task_id: &str,
+    level: LoggingLevel,
+    message: impl Into<String>,
+    extra: Value,
+) {
+    let mut data = match extra {
+        Value::Object(map) => map,
+        other => {
+            let mut m = serde_json::Map::new();
+            m.insert("extra".into(), other);
+            m
+        }
+    };
+    data.insert("message".into(), Value::String(message.into()));
+    data.insert("taskId".into(), Value::String(task_id.to_string()));
+    let params = LoggingMessageNotificationParam {
+        level,
+        logger: Some(format!("tasks/{task_id}")),
+        data: Value::Object(data),
+    };
+    let value = serde_json::to_value(&params).unwrap_or(Value::Null);
+    bus.publish("tasks", "notifications/message", value);
 }
 
 /// Collect `(server, tool)` pairs that are task-capable from the live pool.
@@ -781,7 +865,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let db = dir.path().join("tasks.db");
         let bus = vmcp_notify::Bus::new(16);
-        let pool = Arc::new(UpstreamPool::empty_for_test(bus));
+        let pool = Arc::new(UpstreamPool::empty_for_test(bus.clone()));
         pool.insert_synthetic_for_test(
             "mock",
             None,
@@ -794,7 +878,7 @@ mod tests {
                 task_support: vmcp_registry::TaskSupportHint::Optional,
             }],
         );
-        let runner = TaskRunner::new(pool, db, keys, 2, 60_000, 100).unwrap();
+        let runner = TaskRunner::new(pool, bus, db, keys, 2, 60_000, 100).unwrap();
         (dir, runner)
     }
 
@@ -826,6 +910,24 @@ mod tests {
         assert!(err.to_string().contains("not task-capable"));
     }
 
+    #[test]
+    fn publish_task_log_accepts_non_object_extra() {
+        let bus = Bus::new(8);
+        let mut rx = bus.subscribe();
+        publish_task_log(
+            &bus,
+            "tid-1",
+            LoggingLevel::Info,
+            "hello",
+            Value::String("not-an-object".into()),
+        );
+        let n = rx.try_recv().expect("log published");
+        assert_eq!(n.method, "notifications/message");
+        assert_eq!(n.params["data"]["extra"], "not-an-object");
+        assert_eq!(n.params["data"]["taskId"], "tid-1");
+        assert_eq!(n.params["logger"], "tasks/tid-1");
+    }
+
     #[tokio::test]
     async fn runner_enqueue_rejects_then_fails_missing_upstream_client() {
         let mut keys = HashSet::new();
@@ -834,6 +936,7 @@ mod tests {
         let err = runner.enqueue("anon".into(), "nope".into(), "x".into(), Value::Null);
         assert!(matches!(err, Err(TaskError::NotFound(_))));
 
+        let mut rx = runner.bus.subscribe();
         let created = runner
             .enqueue(
                 "anon".into(),
@@ -843,6 +946,22 @@ mod tests {
             )
             .unwrap();
         assert_eq!(created.task.status, TaskStatus::Working);
+
+        let first = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .expect("log timeout")
+            .expect("log recv");
+        assert_eq!(first.method, "notifications/message");
+        assert_eq!(first.source, "tasks");
+        assert!(
+            first.params["logger"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("tasks/"),
+            "logger={}",
+            first.params["logger"]
+        );
+
         // Synthetic pool has no live client → background call fails → Failed.
         let payload = runner
             .store()

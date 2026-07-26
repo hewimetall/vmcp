@@ -11,11 +11,14 @@ pub mod jwks;
 pub mod middleware;
 pub mod password;
 pub mod router;
+pub mod scopes;
 pub mod state;
 pub mod static_tokens;
 pub mod tokens;
 pub mod types;
 
-pub use middleware::require_bearer;
+pub use scopes::ScopePolicy;
+
+pub use middleware::{require_admin_scope, require_bearer};
 pub use router::build_router;
-pub use state::{AuthState, RenameClientError};
+pub use state::{AuthState, DcrPolicy, RenameClientError};

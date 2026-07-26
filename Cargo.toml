@@ -72,7 +72,6 @@ handlebars = { version = "5", default-features = false }
 # Auth
 jsonwebtoken = "9"
 argon2 = "0.5"
-subtle = "2"
 rand = "0.8"
 askama = "0.12"
 

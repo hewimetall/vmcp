@@ -1,0 +1,21 @@
+# Example: only allow public Gateway + same-namespace clients to reach vmcp.
+# Tighten further so /api/v1 is only reachable from operator namespaces.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vmcp
+  namespace: vmcp
+spec:
+  podSelector:
+    matchLabels:
+      app: vmcp
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gateway-system
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8765

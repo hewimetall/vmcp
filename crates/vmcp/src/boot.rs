@@ -22,15 +22,12 @@ use vmcp_upstream::UpstreamPool;
 /// Everything the HTTP ingress needs after config is loaded.
 pub struct BootContext {
     pub cfg: Settings,
-    // `bus`, `schema_swap`, and `skills` are consumed only by the admin UI
-    // (feature `admin`); HTTP-without-admin still builds them for the MCP
-    // server surface but never reads the handles outside boot.
+    // `bus` is consumed by the admin UI (feature `admin`).
     #[cfg_attr(not(feature = "admin"), allow(dead_code))]
     pub bus: Arc<Bus>,
     pub pool: Arc<UpstreamPool>,
-    #[cfg_attr(not(feature = "admin"), allow(dead_code))]
+    /// Shared with MCP server + registry hot-reload (+ admin when enabled).
     pub schema_swap: SchemaHandle,
-    #[cfg_attr(not(feature = "admin"), allow(dead_code))]
     pub skills: SkillsHandle,
     pub vmcp_server: VmcpServer,
 }
@@ -84,33 +81,35 @@ pub async fn boot(cfg: Settings) -> Result<BootContext> {
     let schema_swap: SchemaHandle = Arc::new(ArcSwap::from_pointee(schema));
 
     // Native MCP Tasks (SEP-1686) — SQLite-backed `run_task` for task-capable
-    // upstream tools only (execution.taskSupport / sidecar task_support).
+    // upstream tools. Always create the runner when enabled (even with an empty
+    // allowlist) so a later registry hot-reload can populate tools without a
+    // process restart (Bugbot: empty registry disables tasks).
     let task_runner = if cfg.tasks.enabled {
         let allowlist = collect_task_allowlist(&pool);
         if allowlist.is_empty() {
             warn!(
-                "tasks.enabled but no upstream tools advertise taskSupport; \
-                 run_task will not be registered"
+                "tasks.enabled but no upstream tools advertise taskSupport yet; \
+                 TaskRunner is ready — allowlist will update on registry reload"
             );
-            None
         } else {
             info!(
                 db = %cfg.tasks.db_path.display(),
                 tools = allowlist.len(),
                 "native MCP tasks enabled (SQLite TaskStore)"
             );
-            Some(Arc::new(
-                TaskRunner::new(
-                    pool.clone(),
-                    cfg.tasks.db_path.clone(),
-                    allowlist,
-                    cfg.tasks.max_concurrent,
-                    cfg.tasks.task_ttl_ms,
-                    cfg.tasks.poll_interval_ms,
-                )
-                .context("open tasks sqlite db")?,
-            ))
         }
+        Some(Arc::new(
+            TaskRunner::new(
+                pool.clone(),
+                bus.clone(),
+                cfg.tasks.db_path.clone(),
+                allowlist,
+                cfg.tasks.max_concurrent,
+                cfg.tasks.task_ttl_ms,
+                cfg.tasks.poll_interval_ms,
+            )
+            .context("open tasks sqlite db")?,
+        ))
     } else {
         None
     };
@@ -122,9 +121,8 @@ pub async fn boot(cfg: Settings) -> Result<BootContext> {
         task_runner,
     );
 
-    // Push upstream MCP events to connected clients (pull stays available via
-    // `query_graphql { notifications }`).
-    vmcp_server.spawn_notification_forwarder();
+    // Notification forwarder is started from `serve_http` after
+    // `RegistryReloadHandle` exists, so `tools/list_changed` can rebuild schema.
 
     Ok(BootContext {
         cfg,

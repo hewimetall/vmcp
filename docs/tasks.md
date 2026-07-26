@@ -11,6 +11,13 @@ upstream-инструментов, не превращая каждый GraphQL-
 
 Устойчивые строки задач живут во **встроенном SQLite** (WAL).
 
+### Логи клиенту (MCP logging)
+
+При lifecycle `run_task` (enqueue / call / completed / failed) vmcp публикует
+`notifications/message` с `logger = "tasks/<task_id>"` на внутренний bus —
+то же, что форвардится подключённым `/mcp` клиентам (capability `logging`).
+Не путать с admin sessions dump: для long-running tasks слушайте MCP logging.
+
 ---
 
 ## Включение

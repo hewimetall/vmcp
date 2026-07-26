@@ -10,7 +10,8 @@ MCP gateway на Rust. Собирает несколько upstream MCP-серв
 - **Dynamic schema** — строится при старте из upstream `tools/list`.
 - **Tasks (опционально)** — long-running tools как durable tasks на SQLite.
 - **OAuth 2.1 + PKCE + DCR** — или static bearer tokens.
-- **Hot-reload** — токены и промпты обновляются без рестарта.
+- **Hot-reload** — токены, `registry.json` и промпты обновляются без рестарта.
+- **`/api/v1`** — operator Token CRUD + upstreams reload (Bearer `mcp:admin`).
 
 ## Старт
 

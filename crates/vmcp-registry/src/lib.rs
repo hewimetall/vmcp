@@ -190,12 +190,18 @@ pub enum RegistryError {
     Io(#[from] std::io::Error),
     #[error("parse: {0}")]
     Parse(#[from] serde_json::Error),
+    #[error("env: {0}")]
+    Env(String),
+    #[error("duplicate upstream name: {0}")]
+    DuplicateName(String),
 }
 
 /// Expand `${VAR}` / `$VAR` placeholders from the process environment.
-/// Unset variables become an empty string. Used for HTTP upstream `url` /
-/// `bearer` so secrets stay in `.env` instead of `registry.json`.
-pub fn expand_env(input: &str) -> String {
+///
+/// Missing variables are an **error** (strict) so a typo cannot silently
+/// produce `https://host//mcp` or drop a bearer. Used for HTTP upstream
+/// `url` / `bearer` / `env`.
+pub fn expand_env(input: &str) -> Result<String, RegistryError> {
     let mut out = String::with_capacity(input.len());
     let bytes = input.as_bytes();
     let mut i = 0;
@@ -209,7 +215,10 @@ pub fn expand_env(input: &str) -> String {
             if let Some(end) = input[i + 2..].find('}') {
                 let key = &input[i + 2..i + 2 + end];
                 if !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                    out.push_str(&std::env::var(key).unwrap_or_default());
+                    let val = std::env::var(key).map_err(|_| {
+                        RegistryError::Env(format!("environment variable `{key}` is not set"))
+                    })?;
+                    out.push_str(&val);
                     i += 3 + end;
                     continue;
                 }
@@ -227,38 +236,66 @@ pub fn expand_env(input: &str) -> String {
             .sum::<usize>();
         if len > 0 {
             let key = &rest[..len];
-            out.push_str(&std::env::var(key).unwrap_or_default());
+            let val = std::env::var(key).map_err(|_| {
+                RegistryError::Env(format!("environment variable `{key}` is not set"))
+            })?;
+            out.push_str(&val);
             i += 1 + len;
         } else {
             out.push('$');
             i += 1;
         }
     }
-    out
+    Ok(out)
 }
 
-fn expand_upstream(spec: &mut UpstreamSpec) {
+fn expand_upstream(spec: &mut UpstreamSpec) -> Result<(), RegistryError> {
     if let Some(url) = spec.url.as_mut() {
-        *url = expand_env(url);
+        *url = expand_env(url)?;
     }
     if let Some(bearer) = spec.bearer.as_mut() {
-        let expanded = expand_env(bearer);
+        let expanded = expand_env(bearer)?;
         if expanded.is_empty() {
+            tracing::warn!(
+                upstream = %spec.name,
+                "bearer expanded to empty; dropping Authorization header"
+            );
             spec.bearer = None;
         } else {
             *bearer = expanded;
         }
     }
     for v in spec.env.values_mut() {
-        *v = expand_env(v);
+        *v = expand_env(v)?;
     }
+    Ok(())
+}
+
+/// Soft cap against accidental huge registries (G33).
+pub const MAX_UPSTREAMS: usize = 256;
+
+fn reject_duplicate_names(registry: &Registry) -> Result<(), RegistryError> {
+    if registry.upstreams.len() > MAX_UPSTREAMS {
+        return Err(RegistryError::Env(format!(
+            "too many upstreams ({}); max is {MAX_UPSTREAMS}",
+            registry.upstreams.len()
+        )));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for u in &registry.upstreams {
+        if !seen.insert(u.name.as_str()) {
+            return Err(RegistryError::DuplicateName(u.name.clone()));
+        }
+    }
+    Ok(())
 }
 
 /// Load the registry JSON. Returns an empty registry if the file is absent —
 /// vmcp can boot with no upstreams (useful for OAuth-only deploys).
 ///
 /// After parse, expands `${ENV}` placeholders in each upstream's `url`,
-/// `bearer`, and `env` values.
+/// `bearer`, and `env` values. Duplicate `name`s are rejected. Missing env
+/// vars in placeholders are a hard error.
 pub fn load_registry(path: &Path) -> Result<Registry, RegistryError> {
     if !path.exists() {
         tracing::warn!(
@@ -269,8 +306,9 @@ pub fn load_registry(path: &Path) -> Result<Registry, RegistryError> {
     }
     let text = fs::read_to_string(path)?;
     let mut registry: Registry = serde_json::from_str(&text)?;
+    reject_duplicate_names(&registry)?;
     for upstream in &mut registry.upstreams {
-        expand_upstream(upstream);
+        expand_upstream(upstream)?;
     }
     Ok(registry)
 }
@@ -439,24 +477,51 @@ mod tests {
         std::env::set_var("VMCP_TEST_EXPAND_A", "alpha");
         std::env::set_var("VMCP_TEST_EXPAND_B", "beta");
         assert_eq!(
-            expand_env("https://ex/${VMCP_TEST_EXPAND_A}/mcp"),
+            expand_env("https://ex/${VMCP_TEST_EXPAND_A}/mcp").unwrap(),
             "https://ex/alpha/mcp"
         );
-        assert_eq!(expand_env("tok-$VMCP_TEST_EXPAND_B-end"), "tok-beta-end");
-        assert_eq!(expand_env("no/${VMCP_TEST_EXPAND_MISSING}/x"), "no//x");
+        assert_eq!(
+            expand_env("tok-$VMCP_TEST_EXPAND_B-end").unwrap(),
+            "tok-beta-end"
+        );
+        let err = expand_env("no/${VMCP_TEST_EXPAND_MISSING}/x").unwrap_err();
+        assert!(
+            err.to_string().contains("VMCP_TEST_EXPAND_MISSING"),
+            "missing env must hard-fail, got: {err}"
+        );
         std::env::remove_var("VMCP_TEST_EXPAND_A");
         std::env::remove_var("VMCP_TEST_EXPAND_B");
+    }
+
+    #[test]
+    fn load_registry_rejects_duplicate_names() {
+        let p = tmp_path("reg-dup");
+        fs::write(
+            &p,
+            r#"{"upstreams":[
+              {"name":"a","transport":"http","url":"http://127.0.0.1:1/mcp"},
+              {"name":"a","transport":"http","url":"http://127.0.0.1:2/mcp"}
+            ]}"#,
+        )
+        .unwrap();
+        let err = load_registry(&p).unwrap_err();
+        assert!(
+            matches!(err, RegistryError::DuplicateName(ref n) if n == "a"),
+            "got: {err}"
+        );
+        let _ = fs::remove_file(&p);
     }
 
     #[test]
     fn load_registry_expands_bearer_and_drops_empty() {
         let p = tmp_path("reg-expand");
         std::env::set_var("VMCP_TEST_BEARER", "secret-tok");
+        std::env::set_var("VMCP_TEST_EMPTY_BEARER", "");
         fs::write(
             &p,
             r#"{"upstreams":[
               {"name":"a","transport":"http","url":"https://ex/${VMCP_TEST_BEARER}/mcp","bearer":"${VMCP_TEST_BEARER}"},
-              {"name":"b","transport":"http","url":"https://ex/mcp","bearer":"${VMCP_TEST_MISSING}"}
+              {"name":"b","transport":"http","url":"https://ex/mcp","bearer":"${VMCP_TEST_EMPTY_BEARER}"}
             ]}"#,
         )
         .unwrap();
@@ -468,6 +533,7 @@ mod tests {
         assert_eq!(r.upstreams[0].bearer.as_deref(), Some("secret-tok"));
         assert_eq!(r.upstreams[1].bearer, None);
         std::env::remove_var("VMCP_TEST_BEARER");
+        std::env::remove_var("VMCP_TEST_EMPTY_BEARER");
         cleanup(&[p]);
     }
 

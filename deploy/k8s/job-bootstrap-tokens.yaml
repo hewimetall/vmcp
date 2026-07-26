@@ -1,0 +1,40 @@
+# One-shot: ensure /state/tokens.json has an mcp:admin operator token on the PVC.
+# Requires an image that contains `vmcp` (same as Deployment).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vmcp-bootstrap-tokens
+  namespace: vmcp
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+      containers:
+        - name: bootstrap
+          image: REPLACE_WITH_BUILT_IMAGE
+          imagePullPolicy: Always
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              TOKENS=/state/tokens.json
+              if [ ! -s "$TOKENS" ] || [ "$(cat "$TOKENS")" = "[]" ]; then
+                echo '[]' > "$TOKENS"
+                /usr/local/bin/vmcp pre-reg --name operator --scope mcp:admin --out "$TOKENS"
+                echo "wrote operator token to $TOKENS"
+              else
+                echo "tokens file already present; skip"
+              fi
+              chmod 600 "$TOKENS" || true
+          volumeMounts:
+            - name: state
+              mountPath: /state
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: vmcp-state

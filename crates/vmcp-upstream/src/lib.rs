@@ -10,9 +10,9 @@
 
 mod sql_guard;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
 use arc_swap::ArcSwap;
@@ -87,7 +87,8 @@ pub struct UpstreamPool {
 
 /// One live stdio upstream.
 pub struct UpstreamSession {
-    pub spec: UpstreamSpec,
+    /// Hot-swappable registry entry (description can change without respawn).
+    pub spec: ArcSwap<UpstreamSpec>,
     /// Owned client handle. Dropped on shutdown.
     pub client: Mutex<Option<RunningService<RoleClient, ForwardingClient>>>,
     /// Raw rmcp Tool list (mostly diagnostic — we mostly read from `resolved`).
@@ -99,7 +100,42 @@ pub struct UpstreamSession {
     pub prompts: ArcSwap<Vec<ResolvedPrompt>>,
     /// Per-session call mutex (defence-in-depth, rmcp already serialises).
     pub call_lock: Mutex<()>,
+    /// Last observed liveness: updated on successful/failed RPC. Advisory for
+    /// `/api/v1/upstreams` + `/ready` — call paths still retry while a client
+    /// handle exists.
     pub connected: AtomicBool,
+    /// Last transport/RPC error message (cleared on success).
+    pub last_error: ArcSwap<Option<String>>,
+    /// Unix ms of last successful RPC (0 = never).
+    pub last_ok_unix_ms: AtomicU64,
+}
+
+impl UpstreamSession {
+    fn mark_ok(&self) {
+        self.connected.store(true, Ordering::Relaxed);
+        self.last_error.store(Arc::new(None));
+        self.last_ok_unix_ms.store(unix_ms_now(), Ordering::Relaxed);
+    }
+
+    fn mark_err(&self, err: impl ToString) {
+        self.connected.store(false, Ordering::Relaxed);
+        self.last_error.store(Arc::new(Some(err.to_string())));
+    }
+}
+
+fn unix_ms_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn new_session_fields(connected: bool) -> (AtomicBool, ArcSwap<Option<String>>, AtomicU64) {
+    (
+        AtomicBool::new(connected),
+        ArcSwap::from_pointee(None),
+        AtomicU64::new(if connected { unix_ms_now() } else { 0 }),
+    )
 }
 
 impl UpstreamPool {
@@ -204,14 +240,17 @@ impl UpstreamPool {
             sidecar_spec: None,
             enabled: true,
         };
+        let (connected, last_error, last_ok_unix_ms) = new_session_fields(true);
         let sess = UpstreamSession {
-            spec,
+            spec: ArcSwap::from_pointee(spec),
             client: Mutex::new(None),
             tools: ArcSwap::from_pointee(vec![]),
             resolved: ArcSwap::from_pointee(tools),
             prompts: ArcSwap::from_pointee(vec![]),
             call_lock: Mutex::new(()),
-            connected: AtomicBool::new(true),
+            connected,
+            last_error,
+            last_ok_unix_ms,
         };
         self.sessions.insert(name, Arc::new(sess));
     }
@@ -238,14 +277,17 @@ impl UpstreamPool {
             sidecar_spec: None,
             enabled: true,
         };
+        let (connected, last_error, last_ok_unix_ms) = new_session_fields(true);
         let sess = UpstreamSession {
-            spec,
+            spec: ArcSwap::from_pointee(spec),
             client: Mutex::new(None),
             tools: ArcSwap::from_pointee(vec![]),
             resolved: ArcSwap::from_pointee(tools),
             prompts: ArcSwap::from_pointee(prompts),
             call_lock: Mutex::new(()),
-            connected: AtomicBool::new(true),
+            connected,
+            last_error,
+            last_ok_unix_ms,
         };
         self.sessions.insert(name, Arc::new(sess));
     }
@@ -256,7 +298,18 @@ impl UpstreamPool {
     pub fn description_of(&self, server: &str) -> Option<String> {
         self.sessions
             .get(server)
-            .and_then(|s| s.spec.description.clone())
+            .and_then(|s| s.spec.load().description.clone())
+    }
+
+    /// Update description without respawning (G15).
+    pub fn set_description(&self, server: &str, description: Option<String>) -> bool {
+        let Some(sess) = self.sessions.get(server) else {
+            return false;
+        };
+        let mut next = (**sess.spec.load()).clone();
+        next.description = description;
+        sess.spec.store(Arc::new(next));
+        true
     }
 
     /// Resolved tools for an upstream, or None if unknown.
@@ -329,17 +382,13 @@ impl UpstreamPool {
     }
 
     /// Call an upstream tool. Returns the rmcp `CallToolResult` or an error if
-    /// the upstream is gone / disconnected / timed out.
+    /// the upstream is gone / timed out. Updates per-session status on outcome.
     pub async fn call(&self, server: &str, tool: &str, args: Value) -> Result<CallToolResult> {
         let sess = self
             .sessions
             .get(server)
             .ok_or_else(|| anyhow!("unknown upstream: {server}"))?
             .clone();
-
-        if !sess.connected.load(Ordering::Relaxed) {
-            return Err(anyhow!("upstream '{server}' is disconnected"));
-        }
 
         let _guard = sess.call_lock.lock().await;
 
@@ -364,6 +413,7 @@ impl UpstreamPool {
                     let mut result = CallToolResult::default();
                     result.content = vec![rmcp::model::Content::text(msg)];
                     result.is_error = Some(true);
+                    // SQL guard is a local policy reject — not an upstream outage.
                     return Ok(result);
                 }
             }
@@ -378,15 +428,33 @@ impl UpstreamPool {
         };
 
         let client_guard = sess.client.lock().await;
-        let client = client_guard
-            .as_ref()
-            .ok_or_else(|| anyhow!("upstream '{server}' has no client"))?;
+        let client = match client_guard.as_ref() {
+            Some(c) => c,
+            None => {
+                let msg = format!("upstream '{server}' has no client");
+                sess.mark_err(&msg);
+                return Err(anyhow!(msg));
+            }
+        };
 
-        let res = tokio::time::timeout(self.call_timeout, client.call_tool(req))
-            .await
-            .map_err(|_| anyhow!("upstream '{server}' tool '{tool}' call timed out"))?
-            .with_context(|| format!("upstream '{server}' tool '{tool}' call failed"))?;
-        Ok(res)
+        let res = tokio::time::timeout(self.call_timeout, client.call_tool(req)).await;
+        match res {
+            Ok(Ok(r)) => {
+                sess.mark_ok();
+                Ok(r)
+            }
+            Ok(Err(e)) => {
+                let err =
+                    anyhow!(e).context(format!("upstream '{server}' tool '{tool}' call failed"));
+                sess.mark_err(format!("{err:#}"));
+                Err(err)
+            }
+            Err(_) => {
+                let msg = format!("upstream '{server}' tool '{tool}' call timed out");
+                sess.mark_err(&msg);
+                Err(anyhow!(msg))
+            }
+        }
     }
 
     /// Fetch an upstream prompt via `prompts/get`. Arguments are forwarded
@@ -410,10 +478,6 @@ impl UpstreamPool {
             .ok_or_else(|| anyhow!("unknown upstream: {server}"))?
             .clone();
 
-        if !sess.connected.load(Ordering::Relaxed) {
-            return Err(anyhow!("upstream '{server}' is disconnected"));
-        }
-
         let _guard = sess.call_lock.lock().await;
 
         let req = GetPromptRequestParams::new(name.to_string());
@@ -423,15 +487,32 @@ impl UpstreamPool {
         };
 
         let client_guard = sess.client.lock().await;
-        let client = client_guard
-            .as_ref()
-            .ok_or_else(|| anyhow!("upstream '{server}' has no client"))?;
+        let client = match client_guard.as_ref() {
+            Some(c) => c,
+            None => {
+                let msg = format!("upstream '{server}' has no client");
+                sess.mark_err(&msg);
+                return Err(anyhow!(msg));
+            }
+        };
 
-        let res = tokio::time::timeout(self.call_timeout, client.get_prompt(req))
-            .await
-            .map_err(|_| anyhow!("upstream '{server}' prompt '{name}' get timed out"))?
-            .with_context(|| format!("upstream '{server}' prompt '{name}' get failed"))?;
-        Ok(res)
+        match tokio::time::timeout(self.call_timeout, client.get_prompt(req)).await {
+            Ok(Ok(r)) => {
+                sess.mark_ok();
+                Ok(r)
+            }
+            Ok(Err(e)) => {
+                let err =
+                    anyhow!(e).context(format!("upstream '{server}' prompt '{name}' get failed"));
+                sess.mark_err(format!("{err:#}"));
+                Err(err)
+            }
+            Err(_) => {
+                let msg = format!("upstream '{server}' prompt '{name}' get timed out");
+                sess.mark_err(&msg);
+                Err(anyhow!(msg))
+            }
+        }
     }
 
     /// Re-fetch `prompts/list` for one upstream and swap the cached catalogue.
@@ -443,20 +524,30 @@ impl UpstreamPool {
             .ok_or_else(|| anyhow!("unknown upstream: {server}"))?
             .clone();
 
-        if !sess.connected.load(Ordering::Relaxed) {
-            return Err(anyhow!("upstream '{server}' is disconnected"));
-        }
-
         let _guard = sess.call_lock.lock().await;
         let client_guard = sess.client.lock().await;
-        let client = client_guard
-            .as_ref()
-            .ok_or_else(|| anyhow!("upstream '{server}' has no client"))?;
+        let client = match client_guard.as_ref() {
+            Some(c) => c,
+            None => {
+                let msg = format!("upstream '{server}' has no client");
+                sess.mark_err(&msg);
+                return Err(anyhow!(msg));
+            }
+        };
 
-        let live = tokio::time::timeout(self.call_timeout, client.list_all_prompts())
-            .await
-            .map_err(|_| anyhow!("upstream '{server}' prompts/list timed out"))?
-            .with_context(|| format!("upstream '{server}' prompts/list failed"))?;
+        let live = match tokio::time::timeout(self.call_timeout, client.list_all_prompts()).await {
+            Ok(Ok(p)) => p,
+            Ok(Err(e)) => {
+                let err = anyhow!(e).context(format!("upstream '{server}' prompts/list failed"));
+                sess.mark_err(format!("{err:#}"));
+                return Err(err);
+            }
+            Err(_) => {
+                let msg = format!("upstream '{server}' prompts/list timed out");
+                sess.mark_err(&msg);
+                return Err(anyhow!(msg));
+            }
+        };
 
         let resolved = resolve_prompts(server, live);
         info!(
@@ -465,6 +556,7 @@ impl UpstreamPool {
             "refreshed upstream prompts cache"
         );
         sess.prompts.store(Arc::new(resolved));
+        sess.mark_ok();
         Ok(())
     }
 
@@ -485,6 +577,208 @@ impl UpstreamPool {
     pub fn bus(&self) -> Arc<Bus> {
         self.bus.clone()
     }
+
+    /// Snapshot of live sessions for operator status APIs.
+    pub fn status_snapshot(&self) -> Vec<UpstreamStatus> {
+        let mut out: Vec<_> = self
+            .sessions
+            .iter()
+            .map(|kv| {
+                let s = kv.value();
+                let last_ok = s.last_ok_unix_ms.load(Ordering::Relaxed);
+                let spec = s.spec.load();
+                UpstreamStatus {
+                    name: kv.key().clone(),
+                    description: spec.description.clone(),
+                    transport: format!("{:?}", spec.transport).to_ascii_lowercase(),
+                    connected: s.connected.load(Ordering::Relaxed),
+                    tool_count: s.resolved.load().len(),
+                    prompt_count: s.prompts.load().len(),
+                    last_error: s.last_error.load_full().as_ref().clone(),
+                    last_ok_unix_ms: (last_ok > 0).then_some(last_ok),
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    /// Current registry specs held by live sessions (for reconcile diffs).
+    pub fn specs_snapshot(&self) -> Vec<UpstreamSpec> {
+        let mut out: Vec<_> = self
+            .sessions
+            .iter()
+            .map(|kv| (**kv.value().spec.load()).clone())
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    /// Cancel and remove one upstream. Missing name is a no-op.
+    pub async fn remove(&self, name: &str) {
+        let Some((_, sess)) = self.sessions.remove(name) else {
+            return;
+        };
+        let mut guard = sess.client.lock().await;
+        if let Some(c) = guard.take() {
+            if let Err(e) = c.cancel().await {
+                warn!(upstream = %name, error = %e, "upstream cancel failed on remove");
+            }
+        }
+        sess.connected.store(false, Ordering::Relaxed);
+        info!(upstream = %name, "upstream removed from pool");
+    }
+
+    /// Insert or replace a live session (caller already spawned it).
+    pub async fn upsert(&self, name: String, sess: UpstreamSession) {
+        if self.sessions.contains_key(&name) {
+            self.remove(&name).await;
+        }
+        self.sessions.insert(name.clone(), Arc::new(sess));
+        info!(upstream = %name, "upstream upserted into pool");
+    }
+
+    /// Snapshot of raw + resolved tools for rollback after a failed schema rebuild.
+    #[allow(clippy::type_complexity)]
+    pub fn tools_snapshot(&self, server: &str) -> Option<(Arc<Vec<Tool>>, Arc<Vec<ResolvedTool>>)> {
+        let sess = self.sessions.get(server)?;
+        Some((sess.tools.load_full(), sess.resolved.load_full()))
+    }
+
+    /// Restore tools caches after a failed post-refresh schema rebuild.
+    pub fn restore_tools(
+        &self,
+        server: &str,
+        tools: Arc<Vec<Tool>>,
+        resolved: Arc<Vec<ResolvedTool>>,
+    ) -> bool {
+        let Some(sess) = self.sessions.get(server) else {
+            return false;
+        };
+        sess.tools.store(tools);
+        sess.resolved.store(resolved);
+        true
+    }
+
+    /// Re-run `tools/list` + sidecar merge for one upstream (list_changed path).
+    pub async fn refresh_tools(
+        &self,
+        server: &str,
+        spec_dir: Option<&std::path::Path>,
+    ) -> Result<()> {
+        let sess = self
+            .sessions
+            .get(server)
+            .ok_or_else(|| anyhow!("unknown upstream: {server}"))?
+            .clone();
+        let _guard = sess.call_lock.lock().await;
+        let client_guard = sess.client.lock().await;
+        let client = match client_guard.as_ref() {
+            Some(c) => c,
+            None => {
+                let msg = format!("upstream '{server}' has no client");
+                sess.mark_err(&msg);
+                return Err(anyhow!(msg));
+            }
+        };
+
+        let live_tools =
+            match tokio::time::timeout(self.call_timeout, client.list_all_tools()).await {
+                Ok(Ok(t)) => t,
+                Ok(Err(e)) => {
+                    let err = anyhow!(e).context(format!("upstream '{server}' tools/list failed"));
+                    sess.mark_err(format!("{err:#}"));
+                    return Err(err);
+                }
+                Err(_) => {
+                    let msg = format!("upstream '{server}' tools/list timed out");
+                    sess.mark_err(&msg);
+                    return Err(anyhow!(msg));
+                }
+            };
+
+        let sidecar = resolve_sidecar(&sess.spec.load(), spec_dir)?;
+        let cached: Vec<CachedTool> = live_tools
+            .iter()
+            .map(|t| CachedTool {
+                name: t.name.to_string(),
+                description: t.description.as_ref().map(|s| s.to_string()),
+                input_schema: serde_json::to_value(&t.input_schema)
+                    .unwrap_or_else(|_| serde_json::json!({"type": "object"})),
+                read_only: tool_read_only_hint(t),
+                task_support: tool_task_support_hint(t),
+            })
+            .collect();
+        let (merged, _audit) = apply_sidecar(cached, sidecar.as_ref());
+        let resolved: Vec<ResolvedTool> = merged
+            .into_iter()
+            .map(|c| ResolvedTool {
+                server: server.to_string(),
+                name: c.name,
+                description: c.description,
+                input_schema: c.input_schema,
+                read_only: c.read_only,
+                task_support: c.task_support,
+            })
+            .collect();
+        info!(
+            upstream = %server,
+            count = resolved.len(),
+            "refreshed upstream tools cache"
+        );
+        sess.tools.store(Arc::new(live_tools));
+        sess.resolved.store(Arc::new(resolved));
+        sess.mark_ok();
+        Ok(())
+    }
+
+    /// Number of sessions currently marked connected.
+    pub fn connected_count(&self) -> usize {
+        self.sessions
+            .iter()
+            .filter(|kv| kv.value().connected.load(Ordering::Relaxed))
+            .count()
+    }
+
+    /// True if at least one session is connected.
+    ///
+    /// Note: an **empty** pool returns `false`. Callers that mean "no work to
+    /// do" (zero enabled upstreams in the registry) must check the registry
+    /// separately — see `/ready`.
+    pub fn any_connected(&self) -> bool {
+        self.connected_count() > 0
+    }
+
+    /// Spawn timeout used for reconcile add/replace.
+    pub fn call_timeout(&self) -> Duration {
+        self.call_timeout
+    }
+}
+
+/// Operator-facing upstream status row.
+#[derive(Debug, Clone)]
+pub struct UpstreamStatus {
+    pub name: String,
+    pub description: Option<String>,
+    pub transport: String,
+    pub connected: bool,
+    pub tool_count: usize,
+    pub prompt_count: usize,
+    pub last_error: Option<String>,
+    pub last_ok_unix_ms: Option<u64>,
+}
+
+/// Compare fields that require a session replace when they change.
+pub fn spec_requires_respawn(a: &UpstreamSpec, b: &UpstreamSpec) -> bool {
+    a.transport != b.transport
+        || a.url != b.url
+        || a.bearer != b.bearer
+        || a.command != b.command
+        || a.args != b.args
+        || a.env != b.env
+        || a.cwd != b.cwd
+        || a.sidecar_spec != b.sidecar_spec
+        || a.enabled != b.enabled
 }
 
 /// Spawn a single upstream. Public so tests can do one-shot spawns.
@@ -574,14 +868,17 @@ pub async fn spawn_one(
         })
         .collect();
 
+    let (connected, last_error, last_ok_unix_ms) = new_session_fields(true);
     Ok(UpstreamSession {
-        spec,
+        spec: ArcSwap::from_pointee(spec),
         client: Mutex::new(Some(client)),
         tools: ArcSwap::from_pointee(live_tools),
         resolved: ArcSwap::from_pointee(resolved),
         prompts: ArcSwap::from_pointee(resolved_prompts),
         call_lock: Mutex::new(()),
-        connected: AtomicBool::new(true),
+        connected,
+        last_error,
+        last_ok_unix_ms,
     })
 }
 
@@ -741,3 +1038,90 @@ pub fn build_lock_from_pool(pool: &UpstreamPool) -> ToolsLock {
 /// the common case of consuming this crate.
 pub use vmcp_notify as notify;
 pub use vmcp_registry as registry;
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+    use vmcp_notify::Bus;
+
+    #[test]
+    fn empty_pool_has_zero_connected() {
+        let pool = UpstreamPool::empty_for_test(Bus::new(8));
+        assert_eq!(pool.connected_count(), 0);
+        assert!(!pool.any_connected());
+        assert!(pool.status_snapshot().is_empty());
+    }
+
+    #[test]
+    fn synthetic_session_reports_connected_and_tool_count() {
+        let pool = UpstreamPool::empty_for_test(Bus::new(8));
+        pool.insert_synthetic_for_test(
+            "alpha",
+            Some("desc".into()),
+            vec![ResolvedTool {
+                server: "alpha".into(),
+                name: "echo".into(),
+                description: None,
+                input_schema: serde_json::json!({"type": "object"}),
+                read_only: true,
+                task_support: vmcp_registry::TaskSupportHint::Forbidden,
+            }],
+        );
+        assert!(pool.any_connected());
+        let snap = pool.status_snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].name, "alpha");
+        assert!(snap[0].connected);
+        assert_eq!(snap[0].tool_count, 1);
+        assert!(snap[0].last_error.is_none());
+        assert!(snap[0].last_ok_unix_ms.is_some());
+    }
+
+    #[test]
+    fn mark_err_then_mark_ok_updates_status() {
+        let pool = UpstreamPool::empty_for_test(Bus::new(8));
+        pool.insert_synthetic_for_test("s", None, vec![]);
+        let sess = pool.sessions.get("s").unwrap().clone();
+        sess.mark_err("boom");
+        let bad = pool.status_snapshot();
+        assert!(!bad[0].connected);
+        assert_eq!(bad[0].last_error.as_deref(), Some("boom"));
+        assert!(!pool.any_connected());
+
+        sess.mark_ok();
+        let good = pool.status_snapshot();
+        assert!(good[0].connected);
+        assert!(good[0].last_error.is_none());
+        assert!(pool.any_connected());
+    }
+
+    #[test]
+    fn set_description_updates_without_respawn() {
+        let pool = UpstreamPool::empty_for_test(Bus::new(8));
+        pool.insert_synthetic_for_test("s", Some("old".into()), vec![]);
+        assert!(pool.set_description("s", Some("new".into())));
+        assert_eq!(pool.description_of("s").as_deref(), Some("new"));
+        assert_eq!(pool.specs_snapshot()[0].description.as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn spec_requires_respawn_on_url_change() {
+        let a = UpstreamSpec {
+            name: "x".into(),
+            description: None,
+            transport: vmcp_registry::UpstreamTransport::Http,
+            url: Some("http://a/mcp".into()),
+            bearer: None,
+            command: String::new(),
+            args: vec![],
+            env: Default::default(),
+            cwd: None,
+            sidecar_spec: None,
+            enabled: true,
+        };
+        let mut b = a.clone();
+        assert!(!spec_requires_respawn(&a, &b));
+        b.url = Some("http://b/mcp".into());
+        assert!(spec_requires_respawn(&a, &b));
+    }
+}

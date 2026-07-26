@@ -32,6 +32,8 @@ docker build --target runtime --build-arg FEATURES="--no-default-features" -t vm
 | `/mcp-proxy` | Опциональный transparent proxy upstream `tools/*` + `prompts/*` (`[proxy] enabled = true`) |
 | `/admin` | Панель оператора (feature `admin`) |
 | `/health` | Liveness |
+| `/ready` | Readiness (upstreams soft) |
+| `/api/v1/*` | Operator JSON (Bearer `mcp:admin`) |
 
 Когда нужен: удалённые клиенты (Cursor/Claude/HTTP), несколько клиентов с OAuth, admin UI + запись сессий.
 

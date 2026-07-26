@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: vmcp
+  namespace: vmcp
+spec:
+  selector:
+    app: vmcp
+  ports:
+    - name: http
+      port: 8765
+      targetPort: http

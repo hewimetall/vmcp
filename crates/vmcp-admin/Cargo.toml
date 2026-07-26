@@ -24,7 +24,6 @@ async-graphql = { workspace = true }
 dashmap      = { workspace = true }
 parking_lot  = { workspace = true }
 anyhow       = { workspace = true }
-tracing      = { workspace = true }
 askama       = { workspace = true }
 chrono       = { workspace = true }
 futures      = { workspace = true }

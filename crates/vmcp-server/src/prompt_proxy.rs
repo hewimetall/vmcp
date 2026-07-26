@@ -196,4 +196,81 @@ mod tests {
         assert_eq!(out.get("ok"), Some(&Value::String("true".into())));
         assert_eq!(out.get("q"), Some(&Value::String("hi".into())));
     }
+
+    #[test]
+    fn catalogue_prompt_without_description_and_without_args() {
+        let bus = Bus::new(8);
+        let pool = UpstreamPool::empty_for_test(bus);
+        pool.insert_synthetic_prompts_for_test(
+            "svc",
+            None,
+            vec![],
+            vec![ResolvedPrompt {
+                server: "svc".into(),
+                name: "bare".into(),
+                description: None,
+                arguments: vec![],
+            }],
+        );
+        let listed = catalogue_from_pool(&pool);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "svc__bare");
+        assert!(listed[0].arguments.is_none());
+        assert_eq!(listed[0].description.as_deref(), Some("[svc] bare"));
+    }
+
+    #[test]
+    fn inject_inserts_message_when_first_content_is_non_text() {
+        use rmcp::model::RawImageContent;
+        let tools = vec![ResolvedTool {
+            server: "demo".into(),
+            name: "echo_tool".into(),
+            description: None,
+            input_schema: serde_json::json!({"type": "object"}),
+            read_only: true,
+            task_support: TaskSupportHint::Forbidden,
+        }];
+        let img = PromptMessage::new(
+            PromptMessageRole::User,
+            PromptMessageContent::Image {
+                image: rmcp::model::Annotated {
+                    raw: RawImageContent {
+                        data: "aaa".into(),
+                        mime_type: "image/png".into(),
+                        meta: None,
+                    },
+                    annotations: None,
+                },
+            },
+        );
+        let upstream = GetPromptResult::new(vec![img]);
+        let out = inject_into_result("demo", &tools, upstream);
+        assert!(out.messages.len() >= 2);
+        match &out.messages[0].content {
+            PromptMessageContent::Text { text } => {
+                assert!(text.contains("## vmcp GraphQL routing"));
+            }
+            other => panic!("expected injected text first, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn inject_creates_message_when_upstream_empty() {
+        let tools = vec![ResolvedTool {
+            server: "demo".into(),
+            name: "t".into(),
+            description: None,
+            input_schema: serde_json::json!({"type": "object"}),
+            read_only: true,
+            task_support: TaskSupportHint::Forbidden,
+        }];
+        let out = inject_into_result("demo", &tools, GetPromptResult::new(vec![]));
+        assert_eq!(out.messages.len(), 1);
+        match &out.messages[0].content {
+            PromptMessageContent::Text { text } => {
+                assert!(text.contains("Query.demo.t"));
+            }
+            other => panic!("expected text, got {other:?}"),
+        }
+    }
 }

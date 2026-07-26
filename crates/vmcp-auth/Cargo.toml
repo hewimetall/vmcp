@@ -5,14 +5,11 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-vmcp-config = { path = "../vmcp-config" }
 axum = { workspace = true }
 tower = { workspace = true }
-tower-http = { workspace = true }
 tokio = { workspace = true }
 jsonwebtoken = { workspace = true }
 argon2 = { workspace = true }
-subtle = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

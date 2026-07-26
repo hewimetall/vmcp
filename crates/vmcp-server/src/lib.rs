@@ -16,6 +16,8 @@
 #![allow(clippy::result_large_err)]
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -62,6 +64,12 @@ pub use prompt_catalog::prompt_source_handlers;
 /// by the drift-handler in the bin is visible to in-flight tool calls
 /// here.
 pub type SchemaHandle = Arc<ArcSwap<Schema>>;
+
+/// Async hook invoked on upstream `notifications/tools/list_changed`
+/// (argument = upstream source name). Returns `true` when cache + GraphQL were
+/// updated successfully — only then should clients be notified.
+pub type ToolsChangedHook =
+    Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync>;
 
 /// Hot-swappable skills handle. The admin API mutates the on-disk yaml
 /// files, reloads `Vec<Skill>` from disk, and `.store()`s the new pointee
@@ -138,12 +146,19 @@ fn build_run_task_tool() -> Tool {
     tool
 }
 
-/// Owner key for task context-binding.
+/// Owner key for task context-binding (G26).
 ///
-/// Phase 1 runs single-tenant: every requestor shares the `"anon"` bucket, so
-/// task IDs (UUID) are the access-control mechanism. Per-requestor binding can
-/// be layered on later by extracting an identity from `context`.
-fn task_owner(_context: &RequestContext<RoleServer>) -> String {
+/// Prefer Bearer `client_id` from the HTTP request Parts injected by rmcp
+/// streamable-http. Falls back to `"anon"` only when auth is off / missing.
+fn task_owner(context: &RequestContext<RoleServer>) -> String {
+    use vmcp_auth::types::AccessTokenClaims;
+    if let Some(parts) = context.extensions.get::<http::request::Parts>() {
+        if let Some(claims) = parts.extensions.get::<AccessTokenClaims>() {
+            if !claims.client_id.is_empty() {
+                return claims.client_id.clone();
+            }
+        }
+    }
     "anon".to_string()
 }
 
@@ -288,6 +303,16 @@ impl VmcpServer {
     /// on notifications they understand (e.g. `tools/list_changed`); others are
     /// delivered best-effort.
     pub fn spawn_notification_forwarder(&self) {
+        self.spawn_notification_forwarder_with_tools_hook(None);
+    }
+
+    /// Like [`spawn_notification_forwarder`], but invokes `on_tools_changed(source)`
+    /// *before* forwarding `notifications/tools/list_changed` so the gateway can
+    /// refresh the tool cache + rebuild GraphQL (bin wires this to registry reload).
+    pub fn spawn_notification_forwarder_with_tools_hook(
+        &self,
+        on_tools_changed: Option<ToolsChangedHook>,
+    ) {
         let peers = self.inner.peers.clone();
         let bus = self.inner.pool.bus();
         let pool = self.inner.pool.clone();
@@ -296,9 +321,9 @@ impl VmcpServer {
             loop {
                 match rx.recv().await {
                     Ok(n) => {
-                        // Refresh the prompt cache *before* forwarding so a
-                        // client that re-lists / getPrompt immediately after
-                        // the notification sees the post-drift catalogue.
+                        // Refresh caches *before* forwarding so a client that
+                        // re-lists immediately after the notification sees the
+                        // post-drift catalogue.
                         if n.method == "notifications/prompts/list_changed" {
                             if let Err(e) = pool.refresh_prompts(&n.source).await {
                                 tracing::warn!(
@@ -308,7 +333,23 @@ impl VmcpServer {
                                 );
                             }
                         }
-                        forward_to_peers(&peers, &n).await;
+                        let mut forward = true;
+                        if n.method == "notifications/tools/list_changed" {
+                            if let Some(hook) = on_tools_changed.as_ref() {
+                                // Only tell clients tools changed after gateway
+                                // cache + schema successfully catch up.
+                                forward = hook(n.source.clone()).await;
+                                if !forward {
+                                    tracing::warn!(
+                                        upstream = %n.source,
+                                        "skipping tools/list_changed forward; refresh/schema failed"
+                                    );
+                                }
+                            }
+                        }
+                        if forward {
+                            forward_to_peers(&peers, &n).await;
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -326,6 +367,11 @@ impl VmcpServer {
     /// Schema handle clone — useful for the bin to install drift callbacks.
     pub fn schema_handle(&self) -> SchemaHandle {
         self.inner.schema.clone()
+    }
+
+    /// Task runner when native MCP tasks are enabled.
+    pub fn task_runner(&self) -> Option<Arc<TaskRunner>> {
+        self.inner.tasks.as_ref().map(|t| t.runner.clone())
     }
 
     #[tool(
@@ -416,6 +462,7 @@ Args: `query` (required GraphQL document), `variables` (optional JSON object), `
     async fn query_graphql(
         &self,
         Parameters(args): Parameters<QueryGraphqlArgs>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         if let Err(e) = vmcp_graphql::validation::pre_validate(&args.query) {
             return Ok(CallToolResult::error(vec![Content::text(format!(
@@ -431,6 +478,9 @@ Args: `query` (required GraphQL document), `variables` (optional JSON object), `
         if let Some(op) = args.operation_name {
             req = req.operation_name(op);
         }
+        if let Some(policy) = scope_policy_from_request_context(&context) {
+            req = req.data(policy);
+        }
         let resp = schema_guard.execute(req).await;
         let body = serde_json::to_value(&resp)
             .unwrap_or_else(|e| json!({"errors": [{"message": format!("serialize: {e}")}]}));
@@ -438,6 +488,18 @@ Args: `query` (required GraphQL document), `variables` (optional JSON object), `
             body.to_string(),
         )]))
     }
+}
+
+/// Pull Bearer claims (injected by axum `require_bearer`) out of the HTTP
+/// request Parts that rmcp streamable-http places on MCP request extensions.
+pub(crate) fn scope_policy_from_request_context(
+    context: &RequestContext<RoleServer>,
+) -> Option<vmcp_auth::ScopePolicy> {
+    use vmcp_auth::types::AccessTokenClaims;
+
+    let parts = context.extensions.get::<http::request::Parts>()?;
+    let claims = parts.extensions.get::<AccessTokenClaims>()?;
+    Some(vmcp_auth::ScopePolicy::parse(&claims.scope))
 }
 
 impl VmcpServer {
@@ -462,6 +524,8 @@ impl ServerHandler for VmcpServer {
             .enable_tool_list_changed()
             .enable_prompts()
             .enable_prompts_list_changed()
+            // Upstream + task lifecycle logs arrive as `notifications/message`.
+            .enable_logging()
             .build();
         // Native MCP Tasks (SEP-1686) — only when `run_task` is wired.
         if self.inner.tasks.is_some() {
@@ -549,6 +613,14 @@ impl ServerHandler for VmcpServer {
                 return Err(McpError::invalid_params("run_task is not enabled", None));
             };
             let (server, tool, args) = parse_run_task_args(request.arguments)?;
+            if let Some(policy) = scope_policy_from_request_context(&context) {
+                // Tasks are treated as write-capable (side effects / long-running).
+                if let Err(msg) = policy.authorize(&server, &tool, true) {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "forbidden: {msg}"
+                    ))]));
+                }
+            }
             return match t.runner.run_now(&server, &tool, args).await {
                 Ok(r) => Ok(r),
                 Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("{e:#}"))])),
@@ -581,6 +653,12 @@ impl ServerHandler for VmcpServer {
             ));
         }
         let (server, tool, args) = parse_run_task_args(request.arguments)?;
+        if let Some(policy) = scope_policy_from_request_context(&context) {
+            // Same write-capable check as synchronous run_task.
+            if let Err(msg) = policy.authorize(&server, &tool, true) {
+                return Err(McpError::invalid_params(format!("forbidden: {msg}"), None));
+            }
+        }
         let owner = task_owner(&context);
         t.runner
             .enqueue(owner, server, tool, args)

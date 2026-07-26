@@ -25,6 +25,10 @@ use std::path::{Path, PathBuf};
 
 use notify::{recommended_watcher, Event, RecommendedWatcher, RecursiveMode, Watcher};
 
+/// Re-export so callers can name the watcher guard type without a direct
+/// `notify` dependency.
+pub use notify::RecommendedWatcher as FileWatcher;
+
 /// Start watching `path` for changes; invoke `cb` on every change that touches
 /// it. The returned [`RecommendedWatcher`] MUST be kept alive for as long as
 /// you want events — dropping it silently stops the watch. Bind it like
@@ -34,6 +38,28 @@ use notify::{recommended_watcher, Event, RecommendedWatcher, RecursiveMode, Watc
 /// are filtered to `path`'s file name, so it survives the tmp+rename atomic
 /// write pattern (see module docs).
 pub fn spawn_file_watcher<F>(path: &Path, cb: F) -> anyhow::Result<RecommendedWatcher>
+where
+    F: Fn() + Send + 'static,
+{
+    spawn_file_watcher_mode(path, RecursiveMode::NonRecursive, cb)
+}
+
+/// Like [`spawn_file_watcher`], but watches the parent tree recursively.
+///
+/// Useful for Kubernetes ConfigMap mounts where kubelet updates via a
+/// `..data` symlink dance that non-recursive watches often miss (G03).
+pub fn spawn_file_watcher_recursive<F>(path: &Path, cb: F) -> anyhow::Result<RecommendedWatcher>
+where
+    F: Fn() + Send + 'static,
+{
+    spawn_file_watcher_mode(path, RecursiveMode::Recursive, cb)
+}
+
+fn spawn_file_watcher_mode<F>(
+    path: &Path,
+    mode: RecursiveMode,
+    cb: F,
+) -> anyhow::Result<RecommendedWatcher>
 where
     F: Fn() + Send + 'static,
 {
@@ -51,10 +77,16 @@ where
     let filter_name = target_name.clone();
     let mut watcher = recommended_watcher(move |res: Result<Event, notify::Error>| match res {
         Ok(event) => {
-            let touches_target = event
-                .paths
-                .iter()
-                .any(|p| p.file_name() == Some(filter_name.as_os_str()));
+            // Match target file name OR kubelet `..data` / `..YYYY_…` symlink churn
+            // in the watched tree (ConfigMap projected volume).
+            let touches_target = event.paths.iter().any(|p| {
+                let name = p.file_name().map(|n| n.to_string_lossy());
+                match name.as_deref() {
+                    Some(n) if n == filter_name => true,
+                    Some(n) if n == "..data" || n.starts_with("..") => true,
+                    _ => false,
+                }
+            });
             if touches_target {
                 tracing::debug!(kind = ?event.kind, "watched file changed");
                 cb();
@@ -63,8 +95,13 @@ where
         Err(e) => tracing::warn!(error = %e, "file watcher error"),
     })?;
 
-    watcher.watch(&parent, RecursiveMode::NonRecursive)?;
-    tracing::info!(dir = %parent.display(), file = ?target_name, "file watcher started");
+    watcher.watch(&parent, mode)?;
+    tracing::info!(
+        dir = %parent.display(),
+        file = ?target_name,
+        recursive = matches!(mode, RecursiveMode::Recursive),
+        "file watcher started"
+    );
     Ok(watcher)
 }
 

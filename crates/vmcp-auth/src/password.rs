@@ -1,7 +1,6 @@
 //! Master-password hashing/verification via argon2id.
 //!
-//! `verify_master` is constant-time (argon2 returns an Eq-checked digest +
-//! `subtle::ConstantTimeEq` on the encoded hash for the fast-fail prefix path).
+//! `verify_master` uses argon2's password verifier (constant-time digest compare).
 
 use anyhow::{anyhow, Result};
 use argon2::{

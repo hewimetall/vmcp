@@ -18,7 +18,10 @@
 - бинарь `vmcp` (release с GitHub) **или** `cargo run -p vmcp`
 - `uv` (для `uvx`)
 - Node.js / `npx`
-- `agent-lsp` + `pyright` (`npm i -g pyright`)
+- `agent-lsp` + language servers:
+  - demo Python: `pip install agent-lsp` + `npm i -g pyright`
+  - this Rust workspace: `pip install agent-lsp` + `rustup component add rust-analyzer`
+    then `./scripts/run-agent-lsp.sh` → MCP HTTP on `http://127.0.0.1:8766`
 
 ## Поднять
 

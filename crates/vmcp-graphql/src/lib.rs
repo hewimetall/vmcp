@@ -888,6 +888,7 @@ fn build_namespace_object(
             None => (None, Arc::new(HashMap::new())),
         };
 
+        let is_write = suffix == "Write";
         let mut field = Field::new(
             field_name,
             TypeRef::named_nn("ToolCallResult"),
@@ -897,7 +898,17 @@ fn build_namespace_object(
                 let pool = pool_for_tool.clone();
                 let args_map = args_map_for_tool.clone();
                 let args_json = collect_args(&ctx, &args_map);
+                let denied = ctx
+                    .data_opt::<vmcp_auth::ScopePolicy>()
+                    .and_then(|p| p.authorize(&server, &tool, is_write).err());
                 FieldFuture::new(async move {
+                    if let Some(msg) = denied {
+                        return Ok(Some(FieldValue::owned_any(ToolCallNode {
+                            is_error: true,
+                            text: Some(format!("forbidden: {msg}")),
+                            json: Value::Null,
+                        })));
+                    }
                     let res = pool.call(&server, &tool, args_json).await;
                     let node = match res {
                         Ok(r) => result_to_node(r, max_response_bytes, cap_mode),

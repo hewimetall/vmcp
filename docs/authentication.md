@@ -10,6 +10,7 @@
 | `/mcp-proxy` | то же (если `[proxy]`) | Transparent upstream tools |
 | `/admin` | HTTP Basic (master password) | Operator SPA |
 | `/health` | нет | Liveness |
+| `/ready` | нет | Readiness (soft: ≥1 connected upstream, если в registry есть enabled) |
 | `/authorize`, `/consent`, `/token`, `/register`, `/.well-known/*` | нет | OAuth + metadata |
 
 ---
@@ -119,11 +120,83 @@ curl -H "Authorization: Bearer vmcp_…" https://gateway.example.com/mcp
 
 Не истекают (revoke = удали строку), hot-reload без рестарта, OAuth работает параллельно.
 
+Для operator/k8s удобнее HTTP API (см. ниже), чем править файл вручную.
+
+### Scopes (enforced)
+
+Строка `scope` — space-separated. Проверяется на `query_graphql` / `/mcp-proxy` / `run_task`:
+
+| Scope | Значение |
+| ----- | -------- |
+| `mcp:use` | Полный доступ (как раньше; default у `pre-reg`) |
+| `mcp:admin` | Control-plane `/api/v1` + полный MCP доступ |
+| `mcp:read` | Только Query / readOnly tools |
+| `mcp:write` | Query + Mutation |
+| `upstream:<name>` | Whitelist GraphQL namespace / proxy server (если есть хоть один — режим whitelist) |
+| `deny:<server>.<tool>` | Запрет конкретного tool поверх grants |
+
+Пример: `--scope 'mcp:use upstream:time'` — агент не вызовет `postgres.*`.
+
+> **G25:** enforce режет **вызовы**. GraphQL schema / `search` / introspection пока могут
+> **показывать** чужие namespaces — не считать scopes полной изоляцией каталога.
+
+> **G30:** DCR / OAuth consent **не** выдают `mcp:admin` (strips). Admin только через
+> `pre-reg` / `/api/v1/tokens` с operator Bearer.
+
+Static tokens **бессрочные** (G34); нет last-used/TTL в API. Храни `tokens.json` как secret;
+rotate: `PUT /api/v1/tokens/:client_id`. Файл max ~2 MiB / 10k entries (G33).
+
+`/api/v1` монтируется **только** при `auth.enabled` + нужен `tokens_file` для Token CRUD (G13).
+
+---
+
+## Operator API `/api/v1` (Bearer)
+
+Параллельно `/admin` (HTTP Basic). Automation ходит сюда с static bearer, у которого в `scope` есть **`mcp:admin`**.
+
+Bootstrap:
+
+```bash
+vmcp pre-reg --name operator --scope mcp:admin --out ./tokens.json
+```
+
+| Method | Path | Описание |
+| ------ | ---- | -------- |
+| `GET` | `/api/v1/tokens` | Список без полного секрета (`token_prefix`) |
+| `POST` | `/api/v1/tokens` | `{ "name", "scope"? }` → полный `token` **один раз**; duplicate `name` → 409; unknown scope tokens → 400 |
+| `PUT` | `/api/v1/tokens/:client_id` | Rotate secret (same name/scope); полный `token` один раз |
+| `DELETE` | `/api/v1/tokens/:client_id` | Revoke; нельзя удалить последний `mcp:admin` → 400 |
+| `GET` | `/api/v1/upstreams` | Status live pool |
+| `POST` | `/api/v1/upstreams/reload` | Reconcile `registry.json` без рестарта; ответ включает `registry_sha256` / `mtime_unix_ms` |
+
+```bash
+curl -H "Authorization: Bearer $OPERATOR_TOKEN" \
+  -H 'content-type: application/json' \
+  https://gateway.example.com/api/v1/tokens \
+  -d '{"name":"agent-a","scope":"mcp:use"}'
+```
+
+Без Bearer → 401; Bearer с `mcp:use` (без `mcp:admin`) → 403.  
+`/admin` SPA + Basic **не менялись**.
+
 ---
 
 ## DCR clients (переживают restart)
 
 `POST /register` пишет каждый client в **SQLite** (`auth.clients_db_path`, default `state/clients.db`) + hot cache в DashMap. После рестарта store перечитывается — Cursor не ловит `unknown client_id`.
+
+### DCR policy
+
+```toml
+[auth]
+dcr_enabled = true          # false → POST /register = 403 (pre-reg tokens остаются)
+dcr_max_clients = 256       # 0 = без лимита
+dcr_redirect_uri_allowlist = ["http://127.0.0.1", "http://localhost", "cursor://"]
+```
+
+Пустой allowlist = как раньше (любой `redirect_uri`). Rate-limit на `/register` лучше на Envoy; vmcp даёт policy hooks выше. Успешные registration пишутся в audit log (`DCR client registered`).
+
+Черновые k8s манифесты: [`deploy/k8s/`](../deploy/k8s/).
 
 Каждая registration получает уникальное `name` (`cursor`, `cursor-2`, …). Переименовать в admin UI или:
 
@@ -171,7 +244,17 @@ Bearer middleware не монтируется, `/admin` скрывается. **
 
 ## JWT
 
-- Подписаны ротируемым in-memory ключом (`jwks_rotate_secs`, default 86400).
+- Подписаны ротируемым RS256 ключом (`jwks_rotate_secs`, default 86400).
 - `token_ttl_secs` default 3600; должно быть `jwks_rotate_secs >= 2 * token_ttl_secs`.
 - Rotation держит предыдущий `kid` (окно из 2 ключей) — неистёкшие JWT ещё принимаются.
-- **Restart = новый JWKS** → старые JWT мертвы. Для automation бери static tokens.
+- **По умолчанию restart = новый JWKS** → старые JWT мертвы. Для automation бери static tokens.
+- Опционально persist ключа на PVC:
+
+```toml
+[auth]
+jwks_private_key_pem_path = "/state/jwks.pem"  # load or generate+write 0600
+```
+
+Тогда JWT переживают restart. Пишется PKCS#1 PEM + атомарный
+`<path>.bundle.json` с **current и previous** ключами (окно ротации переживает
+pod recreate — G14/G31). Env: `VMCP_AUTH__JWKS_PRIVATE_KEY_PEM_PATH`.

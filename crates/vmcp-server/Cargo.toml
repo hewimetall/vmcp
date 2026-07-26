@@ -13,6 +13,8 @@ vmcp-upstream = { path = "../vmcp-upstream" }
 vmcp-notify   = { path = "../vmcp-notify" }
 vmcp-graphql  = { path = "../vmcp-graphql" }
 vmcp-registry = { path = "../vmcp-registry" }
+vmcp-auth     = { path = "../vmcp-auth" }
+http = "1"
 rmcp = { workspace = true }
 async-graphql = { workspace = true }
 tokio = { workspace = true }
@@ -31,7 +33,6 @@ regex = { workspace = true }
 dashmap = { workspace = true }
 parking_lot = { workspace = true }
 chrono = { workspace = true }
-rand = { workspace = true }
 rusqlite = { workspace = true }
 uuid = { workspace = true }
 

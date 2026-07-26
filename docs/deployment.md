@@ -21,6 +21,11 @@ vmcp — один Rust binary. В production ставь за TLS (Caddy/nginx) �
 
 ---
 
+## Kubernetes (черновик)
+
+Манифесты Gateway API + PVC + probes: [`deploy/k8s/`](../deploy/k8s/).  
+Operator reconcile: правь `registry.json` / `POST /api/v1/upstreams/reload`, токены через `/api/v1/tokens` (Bearer `mcp:admin`).
+
 ## Docker Compose (рекомендуется)
 
 Stack: **vmcp** (GHCR image) + **Caddy** (TLS на 80/443).

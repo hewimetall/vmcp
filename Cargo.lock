@@ -3700,10 +3700,10 @@ dependencies = [
  "rmcp",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "toml",
  "tower",
- "tower-http",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
@@ -3740,7 +3740,6 @@ dependencies = [
  "tokio-util",
  "tower",
  "tower-http",
- "tracing",
  "vmcp-auth",
  "vmcp-graphql",
  "vmcp-notify",
@@ -3769,30 +3768,24 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "subtle",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tower",
- "tower-http",
  "tracing",
  "url",
  "uuid",
- "vmcp-config",
 ]
 
 [[package]]
 name = "vmcp-config"
 version = "1.0.0"
 dependencies = [
- "anyhow",
  "argon2",
  "figment",
  "serde",
  "thiserror 2.0.18",
  "toml",
- "tracing",
- "url",
 ]
 
 [[package]]
@@ -3801,15 +3794,10 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-graphql",
- "futures",
  "rmcp",
- "serde",
  "serde_json",
- "thiserror 2.0.18",
- "tokio",
  "tracing",
- "vmcp-notify",
- "vmcp-registry",
+ "vmcp-auth",
  "vmcp-upstream",
 ]
 
@@ -3822,14 +3810,12 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
 name = "vmcp-registry"
 version = "1.0.0"
 dependencies = [
- "anyhow",
  "chrono",
  "serde",
  "serde_json",
@@ -3847,10 +3833,10 @@ dependencies = [
  "chrono",
  "dashmap",
  "handlebars 5.1.2",
+ "http",
  "opentelemetry",
  "opentelemetry_sdk",
  "parking_lot",
- "rand 0.8.6",
  "regex",
  "rmcp",
  "rusqlite",
@@ -3863,6 +3849,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "vmcp-auth",
  "vmcp-graphql",
  "vmcp-notify",
  "vmcp-registry",
@@ -3878,10 +3865,8 @@ dependencies = [
  "dashmap",
  "futures",
  "rmcp",
- "serde",
  "serde_json",
  "sqlparser",
- "thiserror 2.0.18",
  "tokio",
  "tracing",
  "vmcp-notify",

@@ -58,8 +58,14 @@ impl RegistryReloadHandle {
     }
 
     /// Upstream `tools/list_changed`: refresh that server's tool cache and rebuild schema.
-    pub async fn handle_tools_changed(&self, source: &str) {
+    /// Returns `true` only when cache + schema (+ allowlist) are consistent, so
+    /// callers can skip notifying MCP clients on failure.
+    pub async fn handle_tools_changed(&self, source: &str) -> bool {
         let _guard = self.inner.lock.lock().await;
+        let Some((old_tools, old_resolved)) = self.inner.pool.tools_snapshot(source) else {
+            warn!(upstream = %source, "tools/list_changed for unknown upstream");
+            return false;
+        };
         if let Err(e) = self
             .inner
             .pool
@@ -71,21 +77,26 @@ impl RegistryReloadHandle {
                 error = %e,
                 "failed to refresh tools after list_changed"
             );
-            return;
+            return false;
         }
         if let Err(e) = rebuild_graphql_schema(&self.inner).await {
             warn!(
                 upstream = %source,
                 error = %e,
-                "failed to rebuild schema after tools/list_changed"
+                "failed to rebuild schema after tools/list_changed; rolling back tool cache"
             );
-            return;
+            let _ = self
+                .inner
+                .pool
+                .restore_tools(source, old_tools, old_resolved);
+            return false;
         }
         // Keep run_task allowlist in sync with sidecar-/list-merged taskSupport.
         if let Some(runner) = self.inner.vmcp_server.task_runner() {
             runner.replace_allowlist(vmcp_server::collect_task_allowlist(&self.inner.pool));
         }
         info!(upstream = %source, "tools/list_changed applied (cache + schema)");
+        true
     }
 }
 

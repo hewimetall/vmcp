@@ -638,6 +638,27 @@ impl UpstreamPool {
         info!(upstream = %name, "upstream upserted into pool");
     }
 
+    /// Snapshot of raw + resolved tools for rollback after a failed schema rebuild.
+    pub fn tools_snapshot(&self, server: &str) -> Option<(Arc<Vec<Tool>>, Arc<Vec<ResolvedTool>>)> {
+        let sess = self.sessions.get(server)?;
+        Some((sess.tools.load_full(), sess.resolved.load_full()))
+    }
+
+    /// Restore tools caches after a failed post-refresh schema rebuild.
+    pub fn restore_tools(
+        &self,
+        server: &str,
+        tools: Arc<Vec<Tool>>,
+        resolved: Arc<Vec<ResolvedTool>>,
+    ) -> bool {
+        let Some(sess) = self.sessions.get(server) else {
+            return false;
+        };
+        sess.tools.store(tools);
+        sess.resolved.store(resolved);
+        true
+    }
+
     /// Re-run `tools/list` + sidecar merge for one upstream (list_changed path).
     pub async fn refresh_tools(
         &self,

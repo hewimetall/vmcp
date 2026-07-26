@@ -66,10 +66,10 @@ pub use prompt_catalog::prompt_source_handlers;
 pub type SchemaHandle = Arc<ArcSwap<Schema>>;
 
 /// Async hook invoked on upstream `notifications/tools/list_changed`
-/// (argument = upstream source name). Wired by the binary to refresh tools +
-/// rebuild GraphQL.
+/// (argument = upstream source name). Returns `true` when cache + GraphQL were
+/// updated successfully — only then should clients be notified.
 pub type ToolsChangedHook =
-    Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+    Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = bool> + Send>> + Send + Sync>;
 
 /// Hot-swappable skills handle. The admin API mutates the on-disk yaml
 /// files, reloads `Vec<Skill>` from disk, and `.store()`s the new pointee
@@ -333,12 +333,23 @@ impl VmcpServer {
                                 );
                             }
                         }
+                        let mut forward = true;
                         if n.method == "notifications/tools/list_changed" {
                             if let Some(hook) = on_tools_changed.as_ref() {
-                                hook(n.source.clone()).await;
+                                // Only tell clients tools changed after gateway
+                                // cache + schema successfully catch up.
+                                forward = hook(n.source.clone()).await;
+                                if !forward {
+                                    tracing::warn!(
+                                        upstream = %n.source,
+                                        "skipping tools/list_changed forward; refresh/schema failed"
+                                    );
+                                }
                             }
                         }
-                        forward_to_peers(&peers, &n).await;
+                        if forward {
+                            forward_to_peers(&peers, &n).await;
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -642,6 +653,12 @@ impl ServerHandler for VmcpServer {
             ));
         }
         let (server, tool, args) = parse_run_task_args(request.arguments)?;
+        if let Some(policy) = scope_policy_from_request_context(&context) {
+            // Same write-capable check as synchronous run_task.
+            if let Err(msg) = policy.authorize(&server, &tool, true) {
+                return Err(McpError::invalid_params(format!("forbidden: {msg}"), None));
+            }
+        }
         let owner = task_owner(&context);
         t.runner
             .enqueue(owner, server, tool, args)

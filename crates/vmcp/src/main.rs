@@ -355,10 +355,23 @@ async fn serve_http(
                 return (StatusCode::SERVICE_UNAVAILABLE, "registry unreadable");
             }
         };
-        // Soft readiness: OK when nothing is expected, or ≥1 live session.
-        // Empty pool with enabled>0 (all spawns failed) must be 503 — do NOT
-        // treat "no sessions" as ready.
-        if enabled == 0 || st.pool.connected_count() > 0 {
+        // Soft readiness:
+        // - enabled==0 and pool empty → ready (idle gateway)
+        // - enabled==0 but pool still has sessions → 503 (stale, await reconcile)
+        // - enabled>0 and ≥1 connected → ready
+        // - enabled>0 and 0 connected → 503 (spawn failures / all down)
+        let live = st.pool.names().len();
+        let connected = st.pool.connected_count();
+        if enabled == 0 {
+            if live == 0 {
+                (StatusCode::OK, "ready")
+            } else {
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "stale upstreams still in pool",
+                )
+            }
+        } else if connected > 0 {
             (StatusCode::OK, "ready")
         } else {
             (StatusCode::SERVICE_UNAVAILABLE, "no upstreams connected")
@@ -389,9 +402,7 @@ async fn serve_http(
         let reload = reload_handle.clone();
         let hook: vmcp_server::ToolsChangedHook = std::sync::Arc::new(move |source: String| {
             let reload = reload.clone();
-            Box::pin(async move {
-                reload.handle_tools_changed(&source).await;
-            })
+            Box::pin(async move { reload.handle_tools_changed(&source).await })
         });
         vmcp_server.spawn_notification_forwarder_with_tools_hook(Some(hook));
     }

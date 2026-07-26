@@ -197,6 +197,24 @@ pub fn read_entries(path: &Path) -> Result<Vec<StaticTokenEntry>> {
             entries.len()
         );
     }
+    // Same scope rules as mint/API — reject typos on disk load/hot-reload so
+    // ScopePolicy::parse cannot silently drop unknown tokens.
+    for (i, e) in entries.iter().enumerate() {
+        if !valid_id(&e.client_id) {
+            anyhow::bail!(
+                "token file {}: entry[{i}] invalid client_id {:?}",
+                path.display(),
+                e.client_id
+            );
+        }
+        crate::scopes::validate_scope_string(&e.scope).map_err(|err| {
+            anyhow::anyhow!(
+                "token file {}: entry[{i}] client_id={}: {err}",
+                path.display(),
+                e.client_id
+            )
+        })?;
+    }
     Ok(entries)
 }
 
@@ -494,6 +512,40 @@ mod tests {
             err.to_string().contains("max is"),
             "expected size cap error, got: {err}"
         );
+    }
+
+    #[test]
+    fn load_and_reload_reject_invalid_scope_on_disk() {
+        let dir = TempDir::new();
+        let f = dir.path().join("tokens.json");
+        let good = generate_entry("ci", Some("mcp:use")).unwrap();
+        append_atomic(&f, &good).unwrap();
+        let store = StaticTokenStore::load(&f).unwrap();
+        assert!(store.lookup(&good.token).is_some());
+
+        // Hand-edit a bad scope into the file.
+        std::fs::write(
+            &f,
+            r#"[{
+              "token": "vmcp_deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+              "client_id": "bad",
+              "name": "bad",
+              "scope": "mcp:use deny:broken",
+              "issued_at": "2020-01-01T00:00:00Z"
+            }]"#,
+        )
+        .unwrap();
+        assert!(
+            read_entries(&f).is_err(),
+            "read_entries must reject invalid deny: token"
+        );
+        // Hot-reload keeps the previous good set on parse/validation failure.
+        store.reload(&f);
+        assert!(
+            store.lookup(&good.token).is_some(),
+            "reload must keep previous set when disk scope is invalid"
+        );
+        assert_eq!(store.len(), 1);
     }
 
     #[test]

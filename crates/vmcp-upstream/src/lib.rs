@@ -639,6 +639,7 @@ impl UpstreamPool {
     }
 
     /// Snapshot of raw + resolved tools for rollback after a failed schema rebuild.
+    #[allow(clippy::type_complexity)]
     pub fn tools_snapshot(&self, server: &str) -> Option<(Arc<Vec<Tool>>, Arc<Vec<ResolvedTool>>)> {
         let sess = self.sessions.get(server)?;
         Some((sess.tools.load_full(), sess.resolved.load_full()))

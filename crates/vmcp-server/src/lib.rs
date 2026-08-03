@@ -104,7 +104,7 @@ struct Inner {
 /// The gated `run_task` tool plus its SQLite-backed task runner.
 struct RunTaskTool {
     runner: Arc<TaskRunner>,
-    /// Advertised `Tool` (carries `execution.taskSupport = optional`).
+    /// Advertised `Tool` for the native tasks proxy.
     tool: Tool,
 }
 
@@ -131,7 +131,7 @@ fn build_run_task_tool() -> Tool {
         "required": ["server", "tool"]
     });
     let schema_obj = schema.as_object().cloned().unwrap_or_default();
-    let mut tool = Tool::new_with_raw(
+    Tool::new_with_raw(
         RUN_TASK_TOOL,
         Some(
             "Run a task-capable upstream tool. Prefer augmenting tools/call with `task` \
@@ -141,9 +141,7 @@ fn build_run_task_tool() -> Tool {
                 .into(),
         ),
         Arc::new(schema_obj),
-    );
-    tool.execution = Some(ToolExecution::new().with_task_support(TaskSupport::Optional));
-    tool
+    )
 }
 
 /// Owner key for task context-binding (G26).
@@ -465,7 +463,7 @@ Args: `query` (required GraphQL document), `variables` (optional JSON object), `
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         if let Err(e) = vmcp_graphql::validation::pre_validate(&args.query) {
-            return Ok(CallToolResult::error(vec![Content::text(format!(
+            return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                 "validation: {e}"
             ))]));
         }
@@ -484,7 +482,7 @@ Args: `query` (required GraphQL document), `variables` (optional JSON object), `
         let resp = schema_guard.execute(req).await;
         let body = serde_json::to_value(&resp)
             .unwrap_or_else(|e| json!({"errors": [{"message": format!("serialize: {e}")}]}));
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             body.to_string(),
         )]))
     }
@@ -509,7 +507,7 @@ impl VmcpServer {
             .tasks
             .as_ref()
             .map(|d| d.runner.store())
-            .ok_or_else(McpError::method_not_found::<GetTaskInfoMethod>)
+            .ok_or_else(McpError::method_not_found::<GetTaskMethod>)
     }
 }
 
@@ -527,9 +525,11 @@ impl ServerHandler for VmcpServer {
             // Upstream + task lifecycle logs arrive as `notifications/message`.
             .enable_logging()
             .build();
-        // Native MCP Tasks (SEP-1686) — only when `run_task` is wired.
+        // Native MCP Tasks (SEP-2663) — only when `run_task` is wired.
         if self.inner.tasks.is_some() {
-            caps.tasks = Some(TasksCapability::server_default());
+            caps.extensions
+                .get_or_insert_with(ExtensionCapabilities::new)
+                .insert(TASKS_EXTENSION_ID.to_string(), JsonObject::new());
         }
         let instructions: String = if self.inner.tasks.is_some() {
             "vmcp: Virtual MCP gateway.\n\
@@ -587,11 +587,7 @@ impl ServerHandler for VmcpServer {
         if let Some(t) = &self.inner.tasks {
             tools.push(t.tool.clone());
         }
-        Ok(ListToolsResult {
-            tools,
-            meta: None,
-            next_cursor: None,
-        })
+        Ok(ListToolsResult::with_all_items(tools))
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
@@ -605,7 +601,7 @@ impl ServerHandler for VmcpServer {
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> Result<CallToolResponse, McpError> {
         // `run_task` invoked normally (non-task path of an `optional` tool):
         // run synchronously by proxying to the allowlisted upstream tool.
         if request.name == RUN_TASK_TOOL {
@@ -616,58 +612,39 @@ impl ServerHandler for VmcpServer {
             if let Some(policy) = scope_policy_from_request_context(&context) {
                 // Tasks are treated as write-capable (side effects / long-running).
                 if let Err(msg) = policy.authorize(&server, &tool, true) {
-                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                         "forbidden: {msg}"
-                    ))]));
+                    ))])
+                    .into());
                 }
             }
+            if context
+                .client_capabilities()
+                .is_some_and(|caps| caps.supports_tasks())
+            {
+                let owner = task_owner(&context);
+                let create = t
+                    .runner
+                    .enqueue(owner, server, tool, args)
+                    .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+                return Ok(CallToolResponse::Task(create));
+            }
             return match t.runner.run_now(&server, &tool, args).await {
-                Ok(r) => Ok(r),
-                Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("{e:#}"))])),
+                Ok(r) => Ok(r.into()),
+                Err(e) => {
+                    Ok(CallToolResult::error(vec![ContentBlock::text(format!("{e:#}"))]).into())
+                }
             };
         }
         let tcc = ToolCallContext::new(self, request, context);
         self.tool_router.call(tcc).await
     }
 
-    // ---- Native MCP Tasks (SEP-1686): only `run_task` is augmentable ----
+    // ---- Native MCP Tasks (SEP-2663): only `run_task` materializes tasks ----
 
-    async fn enqueue_task(
+    async fn get_task(
         &self,
-        request: CallToolRequestParams,
-        context: RequestContext<RoleServer>,
-    ) -> Result<CreateTaskResult, McpError> {
-        let Some(t) = &self.inner.tasks else {
-            return Err(McpError::invalid_params(
-                "task-based invocation is not supported",
-                None,
-            ));
-        };
-        if request.name != RUN_TASK_TOOL {
-            return Err(McpError::invalid_params(
-                format!(
-                    "tool '{}' does not support task-based invocation",
-                    request.name
-                ),
-                None,
-            ));
-        }
-        let (server, tool, args) = parse_run_task_args(request.arguments)?;
-        if let Some(policy) = scope_policy_from_request_context(&context) {
-            // Same write-capable check as synchronous run_task.
-            if let Err(msg) = policy.authorize(&server, &tool, true) {
-                return Err(McpError::invalid_params(format!("forbidden: {msg}"), None));
-            }
-        }
-        let owner = task_owner(&context);
-        t.runner
-            .enqueue(owner, server, tool, args)
-            .map_err(|e| McpError::invalid_params(e.to_string(), None))
-    }
-
-    async fn get_task_info(
-        &self,
-        request: GetTaskInfoParams,
+        request: GetTaskParams,
         context: RequestContext<RoleServer>,
     ) -> Result<GetTaskResult, McpError> {
         let store = self.task_store()?;
@@ -676,37 +653,27 @@ impl ServerHandler for VmcpServer {
             .map_err(task_err_to_mcp)
     }
 
-    async fn get_task_result(
+    async fn update_task(
         &self,
-        request: GetTaskResultParams,
+        request: UpdateTaskParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<GetTaskPayloadResult, McpError> {
+    ) -> Result<(), McpError> {
         let store = self.task_store()?;
-        let payload = store
-            .await_result(&request.task_id, &task_owner(&context))
-            .await
-            .map_err(task_err_to_mcp)?;
-        Ok(GetTaskPayloadResult::new(payload))
+        store
+            .get(&request.task_id, &task_owner(&context))
+            .map(|_| ())
+            .map_err(task_err_to_mcp)
     }
 
     async fn cancel_task(
         &self,
         request: CancelTaskParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<CancelTaskResult, McpError> {
+    ) -> Result<(), McpError> {
         let store = self.task_store()?;
         store
             .cancel(&request.task_id, &task_owner(&context))
             .map_err(task_err_to_mcp)
-    }
-
-    async fn list_tasks(
-        &self,
-        _request: Option<PaginatedRequestParams>,
-        context: RequestContext<RoleServer>,
-    ) -> Result<ListTasksResult, McpError> {
-        let store = self.task_store()?;
-        Ok(store.list(&task_owner(&context)))
     }
 
     async fn list_prompts(
@@ -742,18 +709,14 @@ impl ServerHandler for VmcpServer {
             })
             .collect();
 
-        Ok(ListPromptsResult {
-            meta: None,
-            next_cursor: None,
-            prompts,
-        })
+        Ok(ListPromptsResult::with_all_items(prompts))
     }
 
     async fn get_prompt(
         &self,
         request: GetPromptRequestParams,
         _ctx: RequestContext<RoleServer>,
-    ) -> Result<GetPromptResult, McpError> {
+    ) -> Result<GetPromptResponse, McpError> {
         // Take an owned Skill clone out of the snapshot, then drop the guard
         // before we touch anything that could await. (render_skill is sync
         // today, but cloning the Skill out also keeps Inner.skills hot-swap-
@@ -787,10 +750,10 @@ impl ServerHandler for VmcpServer {
             McpError::invalid_params(format!("render skill `{}`: {e}", skill.name), None)
         })?;
 
-        Ok(GetPromptResult::new(vec![PromptMessage::new_text(
-            PromptMessageRole::User,
-            rendered,
-        )])
-        .with_description(skill.description.clone()))
+        Ok(
+            GetPromptResult::new(vec![PromptMessage::new_text(Role::User, rendered)])
+                .with_description(skill.description.clone())
+                .into(),
+        )
     }
 }

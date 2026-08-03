@@ -41,7 +41,7 @@ impl Echo {
         Parameters(args): Parameters<EchoArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let msg = args.msg.unwrap_or_else(|| "pong".to_string());
-        Ok(CallToolResult::success(vec![Content::text(msg)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(msg)]))
     }
 }
 

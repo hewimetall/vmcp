@@ -87,17 +87,16 @@ pub(crate) fn inject_into_result(
     if upstream.messages.is_empty() {
         upstream
             .messages
-            .push(PromptMessage::new_text(PromptMessageRole::User, injection));
+            .push(PromptMessage::new_text(Role::User, injection));
     } else {
         match &mut upstream.messages[0].content {
-            PromptMessageContent::Text { text } => {
-                *text = prepend_injection(&injection, text);
+            ContentBlock::Text(t) => {
+                t.text = prepend_injection(&injection, &t.text);
             }
             _ => {
-                upstream.messages.insert(
-                    0,
-                    PromptMessage::new_text(PromptMessageRole::User, injection),
-                );
+                upstream
+                    .messages
+                    .insert(0, PromptMessage::new_text(Role::User, injection));
             }
         }
     }
@@ -107,8 +106,8 @@ pub(crate) fn inject_into_result(
 fn preview_messages_text(messages: &[PromptMessage]) -> String {
     let mut parts = Vec::new();
     for m in messages {
-        if let PromptMessageContent::Text { text } = &m.content {
-            parts.push(text.as_str());
+        if let ContentBlock::Text(t) = &m.content {
+            parts.push(t.text.as_str());
         }
     }
     parts.join("\n")
@@ -171,12 +170,13 @@ mod tests {
             task_support: TaskSupportHint::Forbidden,
         }];
         let upstream = GetPromptResult::new(vec![PromptMessage::new_text(
-            PromptMessageRole::User,
+            Role::User,
             "ORIGINAL BODY uses echo_tool",
         )]);
         let out = inject_into_result("demo", &tools, upstream);
         match &out.messages[0].content {
-            PromptMessageContent::Text { text } => {
+            ContentBlock::Text(t) => {
+                let text = &t.text;
                 assert!(text.contains("Query.demo.echoTool"));
                 assert!(text.contains("ORIGINAL BODY uses echo_tool"));
                 assert!(text.starts_with("## vmcp GraphQL routing"));
@@ -221,7 +221,6 @@ mod tests {
 
     #[test]
     fn inject_inserts_message_when_first_content_is_non_text() {
-        use rmcp::model::RawImageContent;
         let tools = vec![ResolvedTool {
             server: "demo".into(),
             name: "echo_tool".into(),
@@ -231,23 +230,15 @@ mod tests {
             task_support: TaskSupportHint::Forbidden,
         }];
         let img = PromptMessage::new(
-            PromptMessageRole::User,
-            PromptMessageContent::Image {
-                image: rmcp::model::Annotated {
-                    raw: RawImageContent {
-                        data: "aaa".into(),
-                        mime_type: "image/png".into(),
-                        meta: None,
-                    },
-                    annotations: None,
-                },
-            },
+            Role::User,
+            ContentBlock::Image(ImageContent::new("aaa", "image/png")),
         );
         let upstream = GetPromptResult::new(vec![img]);
         let out = inject_into_result("demo", &tools, upstream);
         assert!(out.messages.len() >= 2);
         match &out.messages[0].content {
-            PromptMessageContent::Text { text } => {
+            ContentBlock::Text(t) => {
+                let text = &t.text;
                 assert!(text.contains("## vmcp GraphQL routing"));
             }
             other => panic!("expected injected text first, got {other:?}"),
@@ -267,7 +258,8 @@ mod tests {
         let out = inject_into_result("demo", &tools, GetPromptResult::new(vec![]));
         assert_eq!(out.messages.len(), 1);
         match &out.messages[0].content {
-            PromptMessageContent::Text { text } => {
+            ContentBlock::Text(t) => {
+                let text = &t.text;
                 assert!(text.contains("Query.demo.t"));
             }
             other => panic!("expected text, got {other:?}"),

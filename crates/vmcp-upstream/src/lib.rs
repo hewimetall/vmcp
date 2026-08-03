@@ -19,9 +19,9 @@ use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use futures::future::join_all;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ClientCapabilities, ClientInfo, GetPromptRequestParams,
-    GetPromptResult, Implementation, LoggingMessageNotificationParam, ProgressNotificationParam,
-    Prompt, Tool,
+    CallToolRequestParams, CallToolResult, ClientCapabilities, ClientInfo, ContentBlock,
+    GetPromptRequestParams, GetPromptResult, Implementation, LoggingMessageNotificationParam,
+    ProgressNotificationParam, Prompt, Tool,
 };
 use rmcp::service::{NotificationContext, RoleClient, RunningService};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
@@ -411,7 +411,7 @@ impl UpstreamPool {
                 if let Err(guard_err) = crate::sql_guard::inspect(sql) {
                     let msg = format!("blocked by vmcp SQL guard: {guard_err}");
                     let mut result = CallToolResult::default();
-                    result.content = vec![rmcp::model::Content::text(msg)];
+                    result.content = vec![ContentBlock::text(msg)];
                     result.is_error = Some(true);
                     // SQL guard is a local policy reject — not an upstream outage.
                     return Ok(result);
@@ -925,16 +925,10 @@ fn tool_read_only_hint(tool: &Tool) -> bool {
         .unwrap_or(false)
 }
 
-/// Map upstream `execution.taskSupport` into the registry hint used for the
-/// `run_task` allowlist. Absent / forbidden → not a task tool.
-fn tool_task_support_hint(tool: &Tool) -> vmcp_registry::TaskSupportHint {
-    use rmcp::model::TaskSupport;
-    use vmcp_registry::TaskSupportHint;
-    match tool.task_support() {
-        TaskSupport::Optional => TaskSupportHint::Optional,
-        TaskSupport::Required => TaskSupportHint::Required,
-        TaskSupport::Forbidden => TaskSupportHint::Forbidden,
-    }
+/// rmcp 3 dropped the Tool `execution.taskSupport` / SEP-1686 hint.
+/// Sidecar overrides still apply after this default.
+fn tool_task_support_hint(_tool: &Tool) -> vmcp_registry::TaskSupportHint {
+    vmcp_registry::TaskSupportHint::Forbidden
 }
 
 /// rmcp client handler that forwards every server-initiated notification onto

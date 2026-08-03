@@ -1,13 +1,12 @@
-//! End-to-end test of native MCP Tasks (SEP-1686) via `run_task` + SQLite.
+//! End-to-end test of native MCP Tasks (SEP-2663) via `run_task` + SQLite.
 //!
 //! Spawns a real `vmcp serve` gateway (Streamable-HTTP ingress) with
-//! `tasks.enabled = true` and a mock upstream whose `delay_read` advertises
-//! `execution.taskSupport = optional`. A client then:
-//!   * sees `run_task` with `taskSupport = optional` and the server `tasks`
-//!     capability,
+//! `tasks.enabled = true` and a mock upstream whose sidecar marks `delay_read`
+//! task-capable. A client then:
+//!   * sees `run_task` and the server `tasks` extension capability,
 //!   * runs `run_task` **normally** (synchronous proxy), and
-//!   * runs `run_task` **as a task**, receiving `CreateTaskResult`, then
-//!     fetching the result via `tasks/result`.
+//!   * runs `run_task` with a task-capable client, receiving `CreateTaskResult`,
+//!     then polling the result via `tasks/get`.
 
 mod common;
 
@@ -15,8 +14,7 @@ use std::path::PathBuf;
 
 use rmcp::model::{
     CallToolRequest, CallToolRequestParams, ClientCapabilities, ClientInfo, ClientRequest,
-    GetTaskResultParams, GetTaskResultRequest, Implementation, ServerResult,
-    TaskAugmentedRequestParamsMeta, TaskStatus,
+    GetTaskParams, Implementation, ServerResult, TaskPayload, TaskStatus,
 };
 use rmcp::ClientHandler;
 use serde_json::{json, Value};
@@ -32,6 +30,17 @@ impl ClientHandler for NullClient {
     }
 }
 
+#[derive(Clone, Default)]
+struct TasksClient;
+impl ClientHandler for TasksClient {
+    fn get_info(&self) -> ClientInfo {
+        ClientInfo::new(
+            ClientCapabilities::builder().enable_tasks().build(),
+            Implementation::new("run-task-test", "0.0.0"),
+        )
+    }
+}
+
 /// A live gateway plus a connected client. The `Gateway` MUST outlive the
 /// client (its child process is killed on drop), so both live in one struct.
 struct Session {
@@ -41,12 +50,35 @@ struct Session {
 
 fn write_config(dir: &std::path::Path) -> PathBuf {
     let mock = env!("CARGO_BIN_EXE_mock_delay_upstream");
+    let specs_dir = dir.join("specs");
+    std::fs::create_dir_all(&specs_dir).unwrap();
+    let sidecar_path = specs_dir.join("mock.json");
+    let sidecar = json!({
+        "server": "mock",
+        "tools": [
+            {
+                "name": "delay_read",
+                "read_only": true,
+                "task_support": "optional"
+            },
+            {
+                "name": "delay_write",
+                "read_only": false
+            }
+        ]
+    });
+    std::fs::write(
+        &sidecar_path,
+        serde_json::to_string_pretty(&sidecar).unwrap(),
+    )
+    .unwrap();
     let registry = json!({
         "upstreams": [{
             "name": "mock",
             "command": mock,
             "args": [],
             "env": { "MOCK_LABEL": "mock" },
+            "sidecar_spec": sidecar_path.display().to_string(),
             "enabled": true
         }]
     });
@@ -116,8 +148,8 @@ async fn advertises_tasks_capability_and_run_task_tool() {
 
     let info = session.client.peer().peer_info().expect("peer info");
     assert!(
-        info.capabilities.tasks.is_some(),
-        "server must advertise `tasks` capability when tasks are enabled"
+        info.capabilities.supports_tasks(),
+        "server must advertise the tasks extension when tasks are enabled"
     );
 
     let tools = session.client.list_all_tools().await.expect("tools/list");
@@ -125,12 +157,14 @@ async fn advertises_tasks_capability_and_run_task_tool() {
         .iter()
         .find(|t| t.name == "run_task")
         .expect("run_task tool present");
-    let supports = run_task
-        .execution
-        .as_ref()
-        .and_then(|e| e.task_support)
-        .expect("run_task has execution.taskSupport");
-    assert_eq!(supports, rmcp::model::TaskSupport::Optional);
+    assert!(
+        run_task
+            .description
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Run a task-capable upstream tool"),
+        "run_task tool should keep its task proxy description"
+    );
 
     // Durable sqlite file should exist after boot.
     assert!(
@@ -157,7 +191,7 @@ async fn run_task_normal_call_is_synchronous() {
     let text = res
         .content
         .iter()
-        .find_map(|c| c.raw.as_text().map(|t| t.text.clone()))
+        .find_map(|c| c.as_text().map(|t| t.text.clone()))
         .expect("text");
     let parsed: Value = serde_json::from_str(&text).expect("json");
     assert_eq!(parsed["label"], json!("mock"));
@@ -169,12 +203,11 @@ async fn run_task_normal_call_is_synchronous() {
 async fn run_task_as_task_creates_and_resolves() {
     let dir = common::TempDir::new("vmcp-run-task-async");
     let cfg = write_config(dir.path());
-    let session = serve(&cfg).await;
+    let gw = common::spawn_gateway(&cfg).await;
+    let client = common::connect_client(TasksClient, gw.mcp_url.clone()).await;
 
-    let mut params = run_task_params(200);
-    params.set_task(serde_json::Map::new());
-    let create = session
-        .client
+    let params = run_task_params(200);
+    let create = client
         .peer()
         .send_request(ClientRequest::CallToolRequest(CallToolRequest::new(params)))
         .await
@@ -186,28 +219,23 @@ async fn run_task_as_task_creates_and_resolves() {
     assert_eq!(task.status, TaskStatus::Working);
     assert!(!task.task_id.is_empty());
 
-    let result = session
-        .client
-        .peer()
-        .send_request(ClientRequest::GetTaskResultRequest(
-            GetTaskResultRequest::new(GetTaskResultParams {
-                meta: None,
-                task_id: task.task_id.clone(),
-            }),
-        ))
-        .await
-        .expect("tasks/result");
-    let text = match result {
-        ServerResult::CallToolResult(r) => r
-            .content
-            .iter()
-            .find_map(|c| c.raw.as_text().map(|t| t.text.clone()))
-            .expect("text content"),
-        ServerResult::GetTaskPayloadResult(p) => p.0["content"][0]["text"]
+    let final_task = loop {
+        let result = client
+            .peer()
+            .get_task(GetTaskParams::new(task.task_id.clone()))
+            .await
+            .expect("tasks/get");
+        if result.task.status().is_terminal() {
+            break result.task;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    let text = match final_task.payload {
+        TaskPayload::Completed { result } => result["content"][0]["text"]
             .as_str()
             .expect("text content")
             .to_string(),
-        other => panic!("unexpected tasks/result response: {other:?}"),
+        other => panic!("unexpected task payload: {other:?}"),
     };
     let inner: Value = serde_json::from_str(&text).expect("mock json");
     assert_eq!(inner["label"], json!("mock"));
@@ -216,7 +244,8 @@ async fn run_task_as_task_creates_and_resolves() {
     // Task row must survive in SQLite.
     assert!(dir.path().join("tasks.db").exists());
 
-    session.client.cancel().await.ok();
+    client.cancel().await.ok();
+    drop(gw);
 }
 
 #[tokio::test]

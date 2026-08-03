@@ -80,18 +80,14 @@ impl ServerHandler for ProxyServer {
                 ));
             }
         }
-        Ok(ListToolsResult {
-            meta: None,
-            next_cursor: None,
-            tools,
-        })
+        Ok(ListToolsResult::with_all_items(tools))
     }
 
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
         ctx: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
+    ) -> Result<CallToolResponse, McpError> {
         let (server, tool) = request.name.split_once(NAME_SEP).ok_or_else(|| {
             McpError::invalid_params(
                 format!(
@@ -110,9 +106,10 @@ impl ServerHandler for ProxyServer {
                 .map(|t| !t.read_only)
                 .unwrap_or(true);
             if let Err(msg) = policy.authorize(server, tool, is_write) {
-                return Ok(CallToolResult::error(vec![Content::text(format!(
+                return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                     "forbidden: {msg}"
-                ))]));
+                ))])
+                .into());
             }
         }
 
@@ -121,9 +118,13 @@ impl ServerHandler for ProxyServer {
             None => Value::Null,
         };
 
-        self.pool.call(server, tool, args).await.map_err(|e| {
-            McpError::internal_error(format!("upstream `{server}` call failed: {e}"), None)
-        })
+        self.pool
+            .call(server, tool, args)
+            .await
+            .map(Into::into)
+            .map_err(|e| {
+                McpError::internal_error(format!("upstream `{server}` call failed: {e}"), None)
+            })
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
@@ -146,18 +147,16 @@ impl ServerHandler for ProxyServer {
         _request: Option<PaginatedRequestParams>,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<ListPromptsResult, McpError> {
-        Ok(ListPromptsResult {
-            meta: None,
-            next_cursor: None,
-            prompts: catalogue_from_pool(&self.pool),
-        })
+        Ok(ListPromptsResult::with_all_items(catalogue_from_pool(
+            &self.pool,
+        )))
     }
 
     async fn get_prompt(
         &self,
         request: GetPromptRequestParams,
         _ctx: RequestContext<RoleServer>,
-    ) -> Result<GetPromptResult, McpError> {
+    ) -> Result<GetPromptResponse, McpError> {
         let (server, prompt) = request.name.split_once(NAME_SEP).ok_or_else(|| {
             McpError::invalid_params(
                 format!(
@@ -180,7 +179,7 @@ impl ServerHandler for ProxyServer {
             })?;
 
         let tools = self.pool.resolved(server).unwrap_or_default();
-        Ok(inject_into_result(server, &tools, upstream))
+        Ok(inject_into_result(server, &tools, upstream).into())
     }
 }
 

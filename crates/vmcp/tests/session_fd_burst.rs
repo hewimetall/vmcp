@@ -7,7 +7,11 @@ mod common;
 
 use std::time::Duration;
 
-fn write_config(dir: &std::path::Path, idle_ttl_secs: u64, gc_interval_secs: u64) -> std::path::PathBuf {
+fn write_config(
+    dir: &std::path::Path,
+    idle_ttl_secs: u64,
+    gc_interval_secs: u64,
+) -> std::path::PathBuf {
     std::fs::create_dir_all(dir.join("skills")).unwrap();
     std::fs::create_dir_all(dir.join("specs")).unwrap();
     std::fs::create_dir_all(dir.join("sessions")).unwrap();
@@ -174,10 +178,7 @@ async fn session_storm_bursts_nofile_then_gc_recovers() {
     let mut burst_err = None;
     for i in 0..256 {
         match open_held_session(&client, &gw.mcp_url, Duration::from_secs(3)).await {
-            Ok(s) => {
-                eprintln!("held session #{i} id={}", s.session_id);
-                held.push(s);
-            }
+            Ok(s) => held.push(s),
             Err(e) => {
                 eprintln!("burst at session #{i} after {} held: {e}", held.len());
                 burst_err = Some(e);
@@ -204,9 +205,7 @@ async fn session_storm_bursts_nofile_then_gc_recovers() {
     drop(held);
     tokio::time::sleep(Duration::from_secs(5)).await;
 
-    let recovered = open_held_session(&client, &gw.mcp_url, Duration::from_secs(15))
+    open_held_session(&client, &gw.mcp_url, Duration::from_secs(15))
         .await
         .expect("new session after idle GC should work once FDs are released");
-    eprintln!("recovered session id={}", recovered.session_id);
-    drop(recovered);
 }

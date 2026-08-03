@@ -97,3 +97,8 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# Keep completed request-wise SSE caches so Last-Event-ID resume works after
+# JSON-RPC responses/errors (hewimetall/vmcp#2). See third_party/README.md.
+[patch.crates-io]
+rmcp = { path = "third_party/rmcp" }

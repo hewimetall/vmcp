@@ -235,15 +235,24 @@ async fn send_one(
             Ok(p) => peer.notify_progress(p).await,
             Err(_) => Ok(()),
         },
-        "notifications/message" => match serde_json::from_value(params.clone()) {
-            Ok(p) => peer.notify_logging_message(p).await,
-            Err(_) => Ok(()),
-        },
+        // SEP-2577 deprecated MCP logging; still bridge bus → client.
+        "notifications/message" => send_logging_message(peer, params).await,
         "notifications/cancelled" => match serde_json::from_value(params.clone()) {
             Ok(p) => peer.notify_cancelled(p).await,
             Err(_) => Ok(()),
         },
         _ => Ok(()),
+    }
+}
+
+#[allow(deprecated)]
+async fn send_logging_message(
+    peer: &Peer<RoleServer>,
+    params: &Value,
+) -> Result<(), rmcp::service::ServiceError> {
+    match serde_json::from_value(params.clone()) {
+        Ok(p) => peer.notify_logging_message(p).await,
+        Err(_) => Ok(()),
     }
 }
 
@@ -517,12 +526,14 @@ impl ServerHandler for VmcpServer {
         let mut impl_info = Implementation::from_build_env();
         impl_info.name = "vmcp".into();
         impl_info.version = env!("CARGO_PKG_VERSION").into();
+        // Upstream + task lifecycle logs arrive as `notifications/message`.
+        // SEP-2577 deprecated MCP logging; keep advertising until clients migrate.
+        #[allow(deprecated)]
         let mut caps = ServerCapabilities::builder()
             .enable_tools()
             .enable_tool_list_changed()
             .enable_prompts()
             .enable_prompts_list_changed()
-            // Upstream + task lifecycle logs arrive as `notifications/message`.
             .enable_logging()
             .build();
         // Native MCP Tasks (SEP-2663) — only when `run_task` is wired.

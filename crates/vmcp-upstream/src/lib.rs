@@ -20,9 +20,13 @@ use dashmap::DashMap;
 use futures::future::join_all;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ClientCapabilities, ClientInfo, ContentBlock,
-    GetPromptRequestParams, GetPromptResult, Implementation, LoggingMessageNotificationParam,
-    ProgressNotificationParam, Prompt, Tool,
+    GetPromptRequestParams, GetPromptResult, Implementation, ProgressNotificationParam, Prompt,
+    Tool,
 };
+// SEP-2577 deprecated MCP logging; keep forwarding upstream messages until
+// clients migrate off notifications/message.
+#[allow(deprecated)]
+use rmcp::model::LoggingMessageNotificationParam;
 use rmcp::service::{NotificationContext, RoleClient, RunningService};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
@@ -1012,6 +1016,7 @@ impl ClientHandler for ForwardingClient {
             .publish(self.source.clone(), "notifications/progress", value);
     }
 
+    #[allow(deprecated)]
     async fn on_logging_message(
         &self,
         params: LoggingMessageNotificationParam,

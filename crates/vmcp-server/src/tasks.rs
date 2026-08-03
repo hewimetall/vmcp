@@ -9,6 +9,9 @@
 //! sidecar override). GraphQL remains the sync path — the gateway awaits
 //! upstream there; task-aware clients use `run_task` + `task`.
 
+// SEP-2577 deprecated MCP logging; task lifecycle still emits notifications/message.
+#![allow(deprecated)]
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -143,7 +146,7 @@ impl TaskRow {
     fn to_task(&self) -> Task {
         let mut t = Task::new(
             self.task_id.clone(),
-            self.status.clone(),
+            self.status,
             self.created_at.clone(),
             self.last_updated_at.clone(),
         );
@@ -845,7 +848,7 @@ mod tests {
         s.cancel_flags.remove(&id);
         assert!(!s.is_cancelled(&id));
         s.cancel_flags.remove(&id);
-        let _ = s.cancel(&id, "a").unwrap();
+        s.cancel(&id, "a").unwrap();
         s.cancel_flags.remove(&id);
         assert!(s.is_cancelled(&id));
     }

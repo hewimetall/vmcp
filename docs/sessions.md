@@ -22,6 +22,10 @@ Idle GC не только помечает запись в registry как `clos
 транспортные воркеры и их дескрипторы не копились после шторма
 пересоздания сессий. `idle_ttl_secs` также задаёт rmcp `keep_alive`.
 
+SSE GET / resume с `Mcp-Session-Id` делает `registry.touch` (без
+`request_count`), чтобы idle GC не рвал живой стрим, пока rmcp
+`keep_alive` ещё сбрасывается на transport-событиях.
+
 ---
 
 ## Раскладка на диске

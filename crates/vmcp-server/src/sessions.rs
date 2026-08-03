@@ -217,6 +217,29 @@ impl SessionRegistry {
         self.persist(session_id);
     }
 
+    /// Refresh idle timestamp without bumping `request_count`.
+    ///
+    /// Used for Streamable HTTP GET (standalone SSE / Last-Event-ID resume)
+    /// so registry idle GC cannot outrun rmcp `keep_alive`, which resets on
+    /// those transport events even when no JSON-RPC POST is recorded.
+    pub fn touch(&self, session_id: &str) {
+        if !id_re().is_match(session_id) {
+            return;
+        }
+        let Some(s) = self.inner.get(session_id) else {
+            return;
+        };
+        s.last_seen_ms.store(now_ms(), Ordering::Relaxed);
+        {
+            let mut st = s.status.lock();
+            if *st == SessionStatus::Closed {
+                *st = SessionStatus::Active;
+            }
+        }
+        drop(s);
+        self.persist(session_id);
+    }
+
     pub fn close(&self, session_id: &str) {
         if let Some(s) = self.inner.get(session_id) {
             *s.status.lock() = SessionStatus::Closed;
@@ -410,6 +433,31 @@ mod tests {
         r.gc(now_ms(), 1);
         assert_eq!(r.snapshot()[0].status, SessionStatus::Closed);
         assert_eq!(r.snapshot()[0].request_count, 1);
+    }
+
+    #[test]
+    fn touch_refreshes_idle_without_bumping_count() {
+        let r = SessionRegistry::new();
+        r.record_request("s1", None, None);
+        assert_eq!(r.snapshot()[0].request_count, 1);
+        for s in r.inner.iter() {
+            s.last_seen_ms.store(0, Ordering::Relaxed);
+        }
+        r.touch("s1");
+        let snap = r.snapshot();
+        assert_eq!(snap[0].request_count, 1);
+        assert!(snap[0].last_seen_ms > 0);
+        assert_eq!(snap[0].status, SessionStatus::Active);
+        // Fresh touch keeps GC from closing.
+        assert!(r.gc(now_ms(), 60_000).is_empty());
+    }
+
+    #[test]
+    fn touch_unknown_or_invalid_is_noop() {
+        let r = SessionRegistry::new();
+        r.touch("missing");
+        r.touch("../evil");
+        assert!(r.snapshot().is_empty());
     }
 
     #[cfg(unix)]

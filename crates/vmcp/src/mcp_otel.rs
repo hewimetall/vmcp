@@ -43,6 +43,12 @@ pub async fn capture_mcp(
         .and_then(|h| h.to_str().ok())
         .map(String::from);
 
+    if req.method() == axum::http::Method::GET {
+        if let Some(sid) = session_id_in.as_deref() {
+            st.registry.touch(sid);
+        }
+    }
+
     let (parts, body) = req.into_parts();
     let req_bytes = match axum::body::to_bytes(body, MAX_BODY).await {
         Ok(b) => b,

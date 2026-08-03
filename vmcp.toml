@@ -54,8 +54,6 @@ sessions_dir     = "./sessions"
 redact_keys      = ["password","secret","token","api_key","Authorization"]
 idle_ttl_secs    = 300
 gc_interval_secs = 30
-# mpsc window per Streamable HTTP session (rmcp default 16 is too small under burst)
-session_channel_capacity = 256
 
 # Optional side endpoint that exposes every resolved upstream MCP tool and
 # prompt 1:1 (`{server}__{name}`) under `mcp_path`. No GraphQL schema, no

@@ -37,7 +37,6 @@ sessions_dir     = "./demo/sessions"
 redact_keys      = ["password", "secret", "token", "api_key", "Authorization"]
 idle_ttl_secs    = 300
 gc_interval_secs = 30
-session_channel_capacity = 256
 
 [proxy]
 enabled  = true

@@ -21,12 +21,6 @@ services:
     # in `.env` (e.g. ghcr.io/hewimetall/vmcp:1.0.0 or a sha tag).
     image: ${VMCP_IMAGE:-ghcr.io/hewimetall/vmcp:latest}
     restart: unless-stopped
-    # Session storms + stdio upstream pipes need more than the Docker default
-    # (often 1024) or the process hits EMFILE / "too many open files".
-    ulimits:
-      nofile:
-        soft: 65536
-        hard: 65536
     expose:
       - "8765"
     environment:
@@ -44,6 +38,8 @@ services:
       VMCP_RECORDER__SESSIONS_DIR: "/var/lib/vmcp/sessions"
       # Persist DCR OAuth clients across recreates (docs/authentication.md).
       VMCP_AUTH__CLIENTS_DB_PATH: "/var/lib/vmcp/state/clients.db"
+      # Optional: Streamable HTTP session mpsc window (rmcp default if unset).
+      # VMCP_SESSION_CHANNEL_CAPACITY: "256"
       RUST_LOG: "info"
     volumes:
       - ./vmcp.toml:/vmcp.toml:ro

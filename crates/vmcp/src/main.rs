@@ -272,20 +272,27 @@ async fn serve_http(
         cfg.recorder.sessions_dir.clone(),
     )?);
 
-    // Larger mpsc window than rmcp's default (16) + keep_alive aligned with
-    // admin idle GC so zombie Streamable HTTP sessions release FDs promptly.
+    // Optional mpsc window override via VMCP_SESSION_CHANNEL_CAPACITY.
+    // Unset → rmcp SessionConfig default. keep_alive tracks idle GC TTL so
+    // zombie Streamable HTTP sessions release FDs promptly.
+    let channel_capacity = std::env::var("VMCP_SESSION_CHANNEL_CAPACITY")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n > 0);
     let mcp_sessions = {
         let mut mgr = LocalSessionManager::default();
-        mgr.session_config.channel_capacity = cfg.recorder.session_channel_capacity.max(1);
-        mgr.session_config.keep_alive =
-            Some(Duration::from_secs(cfg.recorder.idle_ttl_secs.max(1)));
+        if let Some(cap) = channel_capacity {
+            mgr.session_config.channel_capacity = cap;
+        }
+        mgr.session_config.keep_alive = Some(Duration::from_secs(cfg.recorder.idle_ttl_secs));
         Arc::new(mgr)
     };
     let proxy_sessions = if cfg.proxy.enabled {
         let mut mgr = LocalSessionManager::default();
-        mgr.session_config.channel_capacity = cfg.recorder.session_channel_capacity.max(1);
-        mgr.session_config.keep_alive =
-            Some(Duration::from_secs(cfg.recorder.idle_ttl_secs.max(1)));
+        if let Some(cap) = channel_capacity {
+            mgr.session_config.channel_capacity = cap;
+        }
+        mgr.session_config.keep_alive = Some(Duration::from_secs(cfg.recorder.idle_ttl_secs));
         Some(Arc::new(mgr))
     } else {
         None
@@ -295,7 +302,7 @@ async fn serve_http(
         let r = registry.clone();
         let mcp = mcp_sessions.clone();
         let proxy = proxy_sessions.clone();
-        let interval_secs = cfg.recorder.gc_interval_secs.max(1);
+        let interval_secs = cfg.recorder.gc_interval_secs;
         let idle_ttl_ms = cfg.recorder.idle_ttl_secs.saturating_mul(1000);
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(interval_secs));

@@ -10,19 +10,17 @@ sessions_dir     = "./sessions"   # создаётся автоматическ�
 redact_keys      = ["password","secret","token","api_key","Authorization"]
 idle_ttl_secs    = 300            # закрыть idle + tear-down rmcp-сессии (FD/SSE)
 gc_interval_secs = 30
-session_channel_capacity = 256    # окно mpsc на сессию (дефолт rmcp = 16)
 ```
 
-Переменные окружения: `VMCP_RECORDER__SESSIONS_DIR=/var/lib/vmcp/sessions`,
-`VMCP_RECORDER__SESSION_CHANNEL_CAPACITY=256`.
+Переменные окружения:
+- `VMCP_RECORDER__SESSIONS_DIR=/var/lib/vmcp/sessions`
+- `VMCP_SESSION_CHANNEL_CAPACITY=<n>` — окно mpsc на Streamable HTTP сессию
+  (если не задано — дефолт rmcp)
 
 Idle GC не только помечает запись в registry как `closed`, но и вызывает
 `LocalSessionManager::close_session` на `/mcp` и `/mcp-proxy`, чтобы
 транспортные воркеры и их дескрипторы не копились после шторма
 пересоздания сессий. `idle_ttl_secs` также задаёт rmcp `keep_alive`.
-
-В Docker Compose для сервиса `vmcp` выставлен `ulimits.nofile` = 65536
-(см. `docker-compose.yml`), иначе контейнер часто упирается в 1024 FD.
 
 ---
 

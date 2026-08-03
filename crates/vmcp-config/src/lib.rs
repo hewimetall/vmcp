@@ -176,11 +176,6 @@ pub struct RecorderCfg {
     pub idle_ttl_secs: u64,
     #[serde(default = "default_gc_interval")]
     pub gc_interval_secs: u64,
-    /// Tokio mpsc capacity for each Streamable HTTP session worker (request
-    /// / event window). rmcp defaults to 16 — too small under bursty clients
-    /// (tools/list + parallel calls). Env: `VMCP_RECORDER__SESSION_CHANNEL_CAPACITY`.
-    #[serde(default = "default_session_channel_capacity")]
-    pub session_channel_capacity: usize,
 }
 
 fn default_sessions_dir() -> std::path::PathBuf {
@@ -201,9 +196,6 @@ fn default_idle_ttl() -> u64 {
 fn default_gc_interval() -> u64 {
     30
 }
-fn default_session_channel_capacity() -> usize {
-    256
-}
 
 impl Default for RecorderCfg {
     fn default() -> Self {
@@ -212,7 +204,6 @@ impl Default for RecorderCfg {
             redact_keys: default_redact_keys(),
             idle_ttl_secs: default_idle_ttl(),
             gc_interval_secs: default_gc_interval(),
-            session_channel_capacity: default_session_channel_capacity(),
         }
     }
 }
@@ -574,7 +565,6 @@ token_ttl_secs = 3600
         assert_eq!(s.gql.max_depth, 10);
         assert_eq!(s.notif_ring_max, 10_000);
         assert_eq!(s.auth.clients_db_path, PathBuf::from("state/clients.db"));
-        assert_eq!(s.recorder.session_channel_capacity, 256);
         assert_eq!(s.recorder.idle_ttl_secs, 300);
     }
 

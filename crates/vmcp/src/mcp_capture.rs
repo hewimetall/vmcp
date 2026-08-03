@@ -46,6 +46,14 @@ pub async fn capture_mcp(
         .and_then(|h| h.to_str().ok())
         .map(String::from);
 
+    // SSE GET / resume carry a session id but no JSON-RPC body — still count
+    // as activity so idle GC does not close_session under a live stream.
+    if req.method() == axum::http::Method::GET {
+        if let Some(sid) = session_id_in.as_deref() {
+            st.registry.touch(sid);
+        }
+    }
+
     let (parts, body) = req.into_parts();
     let req_bytes = match axum::body::to_bytes(body, MAX_BODY).await {
         Ok(b) => b,

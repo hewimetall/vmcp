@@ -8,11 +8,23 @@ HTTP-сессии шлюза (вкладка **Sessions** в админке) х�
 [recorder]
 sessions_dir     = "./sessions"   # создаётся автоматически
 redact_keys      = ["password","secret","token","api_key","Authorization"]
-idle_ttl_secs    = 300            # помечать простаивающие живые сессии закрытыми
+idle_ttl_secs    = 300            # закрыть idle + tear-down rmcp-сессии (FD/SSE)
 gc_interval_secs = 30
 ```
 
-Переменная окружения: `VMCP_RECORDER__SESSIONS_DIR=/var/lib/vmcp/sessions`.
+Переменные окружения:
+- `VMCP_RECORDER__SESSIONS_DIR=/var/lib/vmcp/sessions`
+- `VMCP_SESSION_CHANNEL_CAPACITY=<n>` — окно mpsc на Streamable HTTP сессию
+  (если не задано — дефолт rmcp)
+
+Idle GC не только помечает запись в registry как `closed`, но и вызывает
+`LocalSessionManager::close_session` на `/mcp` и `/mcp-proxy`, чтобы
+транспортные воркеры и их дескрипторы не копились после шторма
+пересоздания сессий. `idle_ttl_secs` также задаёт rmcp `keep_alive`.
+
+SSE GET / resume с `Mcp-Session-Id` делает `registry.touch` (без
+`request_count`), чтобы idle GC не рвал живой стрим, пока rmcp
+`keep_alive` ещё сбрасывается на transport-событиях.
 
 ---
 

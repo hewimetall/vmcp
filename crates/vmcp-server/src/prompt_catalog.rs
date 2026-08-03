@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use rmcp::model::{PromptMessageContent, PromptMessageRole};
+use rmcp::model::{ContentBlock, Role};
 use serde_json::{Map, Value};
 use vmcp_graphql::{PromptArgMeta, PromptContent, PromptMeta, PromptSourceHandlers};
 use vmcp_upstream::UpstreamPool;
@@ -165,15 +165,15 @@ fn messages_to_text(messages: &[rmcp::model::PromptMessage]) -> String {
     let mut parts = Vec::new();
     for m in messages {
         let role = match m.role {
-            PromptMessageRole::User => "user",
-            PromptMessageRole::Assistant => "assistant",
+            Role::User => "user",
+            Role::Assistant => "assistant",
         };
         match &m.content {
-            PromptMessageContent::Text { text } => {
+            ContentBlock::Text(t) => {
                 if messages.len() == 1 {
-                    parts.push(text.clone());
+                    parts.push(t.text.clone());
                 } else {
-                    parts.push(format!("[{role}]\n{text}"));
+                    parts.push(format!("[{role}]\n{}", t.text));
                 }
             }
             other => parts.push(format!("[{role}] {other:?}")),
@@ -337,7 +337,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_upstream_injects_routing_and_flattens_messages() {
-        use rmcp::model::{GetPromptResult, PromptMessage, PromptMessageRole};
+        use rmcp::model::{GetPromptResult, PromptMessage, Role};
         use vmcp_registry::TaskSupportHint;
         use vmcp_upstream::ResolvedTool;
 
@@ -366,7 +366,7 @@ mod tests {
             "tavily",
             "research",
             GetPromptResult::new(vec![PromptMessage::new_text(
-                PromptMessageRole::User,
+                Role::User,
                 "Call tavily_search on the topic",
             )])
             .with_description("Deep research"),
@@ -389,7 +389,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_upstream_formats_multi_message_bodies() {
-        use rmcp::model::{GetPromptResult, PromptMessage, PromptMessageRole};
+        use rmcp::model::{GetPromptResult, PromptMessage, Role};
 
         let skills: SkillsHandle = Arc::new(ArcSwap::from_pointee(vec![]));
         let bus = Bus::new(32);
@@ -409,8 +409,8 @@ mod tests {
             "demo",
             "chat",
             GetPromptResult::new(vec![
-                PromptMessage::new_text(PromptMessageRole::User, "hello"),
-                PromptMessage::new_text(PromptMessageRole::Assistant, "world"),
+                PromptMessage::new_text(Role::User, "hello"),
+                PromptMessage::new_text(Role::Assistant, "world"),
             ]),
         );
 
@@ -450,13 +450,13 @@ mod tests {
 
     #[test]
     fn messages_to_text_single_and_multi() {
-        use rmcp::model::{PromptMessage, PromptMessageRole};
-        let one = vec![PromptMessage::new_text(PromptMessageRole::User, "solo")];
+        use rmcp::model::{PromptMessage, Role};
+        let one = vec![PromptMessage::new_text(Role::User, "solo")];
         assert_eq!(messages_to_text(&one), "solo");
 
         let two = vec![
-            PromptMessage::new_text(PromptMessageRole::User, "a"),
-            PromptMessage::new_text(PromptMessageRole::Assistant, "b"),
+            PromptMessage::new_text(Role::User, "a"),
+            PromptMessage::new_text(Role::Assistant, "b"),
         ];
         let out = messages_to_text(&two);
         assert_eq!(out, "[user]\na\n\n[assistant]\nb");

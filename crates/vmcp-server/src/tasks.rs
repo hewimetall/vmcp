@@ -9,6 +9,9 @@
 //! sidecar override). GraphQL remains the sync path — the gateway awaits
 //! upstream there; task-aware clients use `run_task` + `task`.
 
+// SEP-2577 deprecated MCP logging; task lifecycle still emits notifications/message.
+#![allow(deprecated)]
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,8 +21,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use dashmap::DashMap;
 use parking_lot::Mutex;
 use rmcp::model::{
-    CancelTaskResult, CreateTaskResult, GetTaskResult, ListTasksResult, LoggingLevel,
-    LoggingMessageNotificationParam, Task, TaskStatus,
+    CreateTaskResult, DetailedTask, GetTaskResult, JsonObject, LoggingLevel,
+    LoggingMessageNotificationParam, Task, TaskPayload, TaskStatus,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
@@ -85,6 +88,7 @@ fn status_to_str(s: &TaskStatus) -> &'static str {
         TaskStatus::Completed => "completed",
         TaskStatus::Failed => "failed",
         TaskStatus::Cancelled => "cancelled",
+        _ => "working",
     }
 }
 
@@ -142,15 +146,57 @@ impl TaskRow {
     fn to_task(&self) -> Task {
         let mut t = Task::new(
             self.task_id.clone(),
-            self.status.clone(),
+            self.status,
             self.created_at.clone(),
             self.last_updated_at.clone(),
         );
         t.status_message = self.status_message.clone();
-        t.ttl = self.ttl_ms;
-        t.poll_interval = self.poll_interval_ms;
+        t.ttl_ms = self.ttl_ms;
+        t.poll_interval_ms = self.poll_interval_ms;
         t
     }
+
+    fn to_detailed_task(&self) -> DetailedTask {
+        let task = self.to_task();
+        let payload = match self.status {
+            TaskStatus::Working => TaskPayload::Working,
+            TaskStatus::InputRequired => TaskPayload::Working,
+            TaskStatus::Completed => TaskPayload::Completed {
+                result: self
+                    .result_json
+                    .as_deref()
+                    .and_then(json_object_from_str)
+                    .unwrap_or_default(),
+            },
+            TaskStatus::Failed => TaskPayload::Failed {
+                error: self
+                    .result_json
+                    .as_deref()
+                    .and_then(json_object_from_str)
+                    .unwrap_or_else(|| error_object(self.status_message.as_deref())),
+            },
+            TaskStatus::Cancelled => TaskPayload::Cancelled,
+            _ => TaskPayload::Working,
+        };
+        DetailedTask::new(task, payload)
+    }
+}
+
+fn json_object_from_str(raw: &str) -> Option<JsonObject> {
+    serde_json::from_str::<Value>(raw)
+        .ok()?
+        .as_object()
+        .cloned()
+}
+
+fn error_object(message: Option<&str>) -> JsonObject {
+    let mut out = JsonObject::new();
+    out.insert("code".into(), Value::from(-32000));
+    out.insert(
+        "message".into(),
+        Value::String(message.unwrap_or("task failed").to_string()),
+    );
+    out
 }
 
 /// Durable SEP-1686 task registry backed by embedded SQLite.
@@ -315,13 +361,10 @@ impl TaskStore {
 
     pub fn get(&self, task_id: &str, owner: &str) -> Result<GetTaskResult, TaskError> {
         let row = self.entry_for_owner(task_id, owner)?;
-        Ok(GetTaskResult {
-            meta: None,
-            task: row.to_task(),
-        })
+        Ok(GetTaskResult::new(row.to_detailed_task()))
     }
 
-    pub fn cancel(&self, task_id: &str, owner: &str) -> Result<CancelTaskResult, TaskError> {
+    pub fn cancel(&self, task_id: &str, owner: &str) -> Result<(), TaskError> {
         let row = self.entry_for_owner(task_id, owner)?;
         if is_terminal_status(&row.status) {
             return Err(TaskError::AlreadyTerminal(task_id.to_string()));
@@ -343,14 +386,10 @@ impl TaskStore {
             )?;
         }
         self.wake(task_id);
-        let row = self.entry_for_owner(task_id, owner)?;
-        Ok(CancelTaskResult {
-            meta: None,
-            task: row.to_task(),
-        })
+        Ok(())
     }
 
-    pub fn list(&self, owner: &str) -> ListTasksResult {
+    pub fn list(&self, owner: &str) -> Vec<Task> {
         let conn = self.conn.lock();
         let mut stmt = match conn.prepare(
             "SELECT task_id, owner, status, status_message, result_json,
@@ -360,7 +399,7 @@ impl TaskStore {
              ORDER BY created_unix_ms ASC",
         ) {
             Ok(s) => s,
-            Err(_) => return ListTasksResult::new(vec![]),
+            Err(_) => return vec![],
         };
         let rows = stmt
             .query_map(params![owner], |r| {
@@ -385,7 +424,7 @@ impl TaskStore {
                 tasks.push(row.to_task());
             }
         }
-        ListTasksResult::new(tasks)
+        tasks
     }
 
     /// Block until the task is terminal, then return the stored `CallToolResult` JSON.
@@ -634,7 +673,7 @@ impl TaskRunner {
         let task = self
             .store
             .get(&task_id, &owner)
-            .map(|g| g.task)
+            .map(|g| g.task.task)
             .unwrap_or_else(|_| {
                 Task::new(task_id.clone(), TaskStatus::Working, now_iso(), now_iso())
             });
@@ -660,11 +699,8 @@ fn publish_task_log(
     };
     data.insert("message".into(), Value::String(message.into()));
     data.insert("taskId".into(), Value::String(task_id.to_string()));
-    let params = LoggingMessageNotificationParam {
-        level,
-        logger: Some(format!("tasks/{task_id}")),
-        data: Value::Object(data),
-    };
+    let params = LoggingMessageNotificationParam::new(level, Value::Object(data))
+        .with_logger(format!("tasks/{task_id}"));
     let value = serde_json::to_value(&params).unwrap_or(Value::Null);
     bus.publish("tasks", "notifications/message", value);
 }
@@ -699,13 +735,13 @@ mod tests {
         let (_dir, s) = tmp_store();
         let id = s.create("alice", "pres", "build").unwrap();
         assert_eq!(s.status_of(&id), Some(TaskStatus::Working));
-        assert_eq!(s.list("alice").tasks.len(), 1);
-        assert_eq!(s.list("bob").tasks.len(), 0);
+        assert_eq!(s.list("alice").len(), 1);
+        assert_eq!(s.list("bob").len(), 0);
         assert!(matches!(s.get(&id, "bob"), Err(TaskError::NotFound(_))));
         let g = s.get(&id, "alice").unwrap();
-        assert_eq!(g.task.task_id, id);
-        assert_eq!(g.task.poll_interval, Some(1_000));
-        assert_eq!(g.task.ttl, Some(60_000));
+        assert_eq!(g.task.task.task_id, id);
+        assert_eq!(g.task.task.poll_interval_ms, Some(1_000));
+        assert_eq!(g.task.task.ttl_ms, Some(60_000));
     }
 
     #[test]
@@ -733,8 +769,8 @@ mod tests {
     fn cancel_flips_working_to_cancelled() {
         let (_dir, s) = tmp_store();
         let id = s.create("a", "s", "t").unwrap();
-        let res = s.cancel(&id, "a").unwrap();
-        assert_eq!(res.task.status, TaskStatus::Cancelled);
+        s.cancel(&id, "a").unwrap();
+        assert_eq!(s.status_of(&id), Some(TaskStatus::Cancelled));
         assert!(s.is_cancelled(&id));
     }
 
@@ -781,7 +817,7 @@ mod tests {
         };
         let s2 = TaskStore::open(&db, 60_000, 1_000).unwrap();
         let g = s2.get(&id, "a").unwrap();
-        assert_eq!(g.task.status, TaskStatus::Completed);
+        assert_eq!(g.task.status(), TaskStatus::Completed);
     }
 
     #[test]
@@ -812,7 +848,7 @@ mod tests {
         s.cancel_flags.remove(&id);
         assert!(!s.is_cancelled(&id));
         s.cancel_flags.remove(&id);
-        let _ = s.cancel(&id, "a").unwrap();
+        s.cancel(&id, "a").unwrap();
         s.cancel_flags.remove(&id);
         assert!(s.is_cancelled(&id));
     }
@@ -859,6 +895,59 @@ mod tests {
         assert_eq!(synth["isError"], serde_json::json!(false));
         let synth2 = synthetic_terminal_payload(&TaskStatus::Failed, None);
         assert_eq!(synth2["isError"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn detailed_task_payloads_cover_terminal_variants() {
+        let (_dir, s) = tmp_store();
+
+        // Failed with no result_json → error_object(message).
+        let failed = s.create("a", "s", "t").unwrap();
+        s.fail(&failed, "boom", None);
+        let g = s.get(&failed, "a").unwrap();
+        assert_eq!(g.task.status(), TaskStatus::Failed);
+        match &g.task.payload {
+            TaskPayload::Failed { error } => {
+                assert_eq!(error.get("message").and_then(|v| v.as_str()), Some("boom"));
+            }
+            other => panic!("expected Failed payload, got {other:?}"),
+        }
+
+        // Failed with non-object result_json also falls back to error_object.
+        let failed2 = s.create("a", "s", "t").unwrap();
+        s.fail(&failed2, "x", Some(Value::String("not-object".into())));
+        let g = s.get(&failed2, "a").unwrap();
+        assert!(matches!(g.task.payload, TaskPayload::Failed { .. }));
+
+        // Cancelled payload.
+        let cancelled = s.create("a", "s", "t").unwrap();
+        s.cancel(&cancelled, "a").unwrap();
+        let g = s.get(&cancelled, "a").unwrap();
+        assert!(matches!(g.task.payload, TaskPayload::Cancelled));
+
+        // Completed with null JSON → empty result object.
+        let done = s.create("a", "s", "t").unwrap();
+        s.complete(&done, Value::Null, None);
+        let g = s.get(&done, "a").unwrap();
+        match &g.task.payload {
+            TaskPayload::Completed { result } => assert!(result.is_empty()),
+            other => panic!("expected Completed payload, got {other:?}"),
+        }
+
+        // InputRequired via direct status write (no public setter).
+        // DetailedTask::new remaps payload Working → status Working, but the
+        // InputRequired match arm in to_detailed_task still runs.
+        let ir = s.create("a", "s", "t").unwrap();
+        {
+            let conn = s.conn.lock();
+            conn.execute(
+                "UPDATE tasks SET status = 'input_required' WHERE task_id = ?1",
+                params![ir],
+            )
+            .unwrap();
+        }
+        let g = s.get(&ir, "a").unwrap();
+        assert!(matches!(g.task.payload, TaskPayload::Working));
     }
 
     fn runner_with_allowlist(keys: HashSet<TaskToolKey>) -> (tempfile::TempDir, TaskRunner) {

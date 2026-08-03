@@ -47,7 +47,7 @@ impl Echo {
         Parameters(args): Parameters<EchoArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let msg = args.msg.unwrap_or_else(|| "pong".to_string());
-        Ok(CallToolResult::success(vec![Content::text(msg)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(msg)]))
     }
 }
 
@@ -131,7 +131,7 @@ async fn http_upstream_discovers_and_calls() {
     let text = res
         .content
         .iter()
-        .find_map(|c| c.raw.as_text().map(|t| t.text.clone()))
+        .find_map(|c| c.as_text().map(|t| t.text.clone()))
         .expect("text content");
     assert_eq!(text, "hello-over-http");
 

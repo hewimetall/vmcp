@@ -38,6 +38,7 @@ services:
       VMCP_RECORDER__SESSIONS_DIR: "/var/lib/vmcp/sessions"
       # Persist DCR OAuth clients across recreates (docs/authentication.md).
       VMCP_AUTH__CLIENTS_DB_PATH: "/var/lib/vmcp/state/clients.db"
+      # Optional: VMCP_SESSION_CHANNEL_CAPACITY — session mpsc window (rmcp default if unset).
       RUST_LOG: "info"
     volumes:
       - ./vmcp.toml:/vmcp.toml:ro

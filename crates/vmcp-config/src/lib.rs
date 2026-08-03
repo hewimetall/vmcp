@@ -169,6 +169,9 @@ pub struct RecorderCfg {
     pub sessions_dir: std::path::PathBuf,
     #[serde(default = "default_redact_keys")]
     pub redact_keys: Vec<String>,
+    /// Mark admin-registry sessions idle after this many seconds without
+    /// traffic, and tear down the matching rmcp transport session (releases
+    /// SSE channels / FDs). Also used as rmcp `SessionConfig::keep_alive`.
     #[serde(default = "default_idle_ttl")]
     pub idle_ttl_secs: u64,
     #[serde(default = "default_gc_interval")]
@@ -562,6 +565,7 @@ token_ttl_secs = 3600
         assert_eq!(s.gql.max_depth, 10);
         assert_eq!(s.notif_ring_max, 10_000);
         assert_eq!(s.auth.clients_db_path, PathBuf::from("state/clients.db"));
+        assert_eq!(s.recorder.idle_ttl_secs, 300);
     }
 
     #[test]

@@ -84,24 +84,51 @@ pub struct Gateway {
 /// Host / port / public base URL are supplied via env overrides so configs do
 /// not need to bake in the free port. Auth is forced off as belt-and-suspenders.
 pub async fn spawn_gateway(cfg: &Path) -> Gateway {
-    spawn_gateway_inner(cfg, true).await
+    spawn_gateway_with_env(cfg, true, &[]).await
 }
 
 /// Like [`spawn_gateway`], but leaves `auth.enabled` as configured (for auth e2e).
 pub async fn spawn_gateway_auth(cfg: &Path) -> Gateway {
-    spawn_gateway_inner(cfg, false).await
+    spawn_gateway_with_env(cfg, false, &[]).await
 }
 
-async fn spawn_gateway_inner(cfg: &Path, force_auth_off: bool) -> Gateway {
+/// Spawn with extra process env (e.g. `VMCP_SESSION_CHANNEL_CAPACITY`).
+pub async fn spawn_gateway_with_env(
+    cfg: &Path,
+    force_auth_off: bool,
+    extra_env: &[(&str, &str)],
+) -> Gateway {
+    spawn_gateway_limited(cfg, force_auth_off, extra_env, None).await
+}
+
+/// Like [`spawn_gateway_with_env`], but lowers the child `RLIMIT_NOFILE`
+/// via `ulimit -n` (Unix) so FD-exhaustion stress tests can "burst".
+pub async fn spawn_gateway_limited(
+    cfg: &Path,
+    force_auth_off: bool,
+    extra_env: &[(&str, &str)],
+    nofile_soft: Option<u64>,
+) -> Gateway {
     let port = free_port().await;
     let base = format!("http://127.0.0.1:{port}");
     let exe = env!("CARGO_BIN_EXE_vmcp");
 
-    let mut cmd = Command::new(exe);
-    cmd.arg("--config")
-        .arg(cfg)
-        .arg("serve")
-        .env("VMCP_HOST", "127.0.0.1")
+    let mut cmd = if let Some(n) = nofile_soft {
+        let mut c = Command::new("bash");
+        // Quote paths; exec replaces the shell so the gateway is PID we kill.
+        c.arg("-c").arg(format!(
+            "ulimit -n {n} && exec \"$1\" --config \"$2\" serve",
+            n = n
+        ));
+        c.arg("_").arg(exe).arg(cfg.as_os_str());
+        c
+    } else {
+        let mut c = Command::new(exe);
+        c.arg("--config").arg(cfg).arg("serve");
+        c
+    };
+
+    cmd.env("VMCP_HOST", "127.0.0.1")
         .env("VMCP_PORT", port.to_string())
         .env("VMCP_PUBLIC_BASE_URL", &base)
         .env("RUST_LOG", "warn")
@@ -111,6 +138,9 @@ async fn spawn_gateway_inner(cfg: &Path, force_auth_off: bool) -> Gateway {
         .kill_on_drop(true);
     if force_auth_off {
         cmd.env("VMCP_AUTH__ENABLED", "false");
+    }
+    for (k, v) in extra_env {
+        cmd.env(k, v);
     }
 
     let child = cmd.spawn().expect("spawn vmcp serve");

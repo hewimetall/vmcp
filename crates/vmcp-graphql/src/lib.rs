@@ -1083,8 +1083,8 @@ fn result_to_node(
     let text = r
         .content
         .iter()
-        .filter_map(|c| match &c.raw {
-            rmcp::model::RawContent::Text(t) => Some(t.text.clone()),
+        .filter_map(|c| match c {
+            rmcp::model::ContentBlock::Text(t) => Some(t.text.clone()),
             _ => None,
         })
         .collect::<Vec<_>>()
@@ -1142,12 +1142,13 @@ fn result_to_node(
         let kinds: Vec<&str> = r
             .content
             .iter()
-            .filter_map(|c| match &c.raw {
-                rmcp::model::RawContent::Image(_) => Some("image"),
-                rmcp::model::RawContent::Audio(_) => Some("audio"),
-                rmcp::model::RawContent::Resource(_) => Some("resource"),
-                rmcp::model::RawContent::ResourceLink(_) => Some("resource_link"),
-                rmcp::model::RawContent::Text(_) => None,
+            .filter_map(|c| match c {
+                rmcp::model::ContentBlock::Image(_) => Some("image"),
+                rmcp::model::ContentBlock::Audio(_) => Some("audio"),
+                rmcp::model::ContentBlock::Resource(_) => Some("resource"),
+                rmcp::model::ContentBlock::ResourceLink(_) => Some("resource_link"),
+                rmcp::model::ContentBlock::Text(_) => None,
+                _ => None,
             })
             .collect();
         if kinds.is_empty() {
@@ -1441,7 +1442,9 @@ mod tests {
     // ---------- result_to_node: cap modes ----------
 
     fn mk_result(text: &str) -> rmcp::model::CallToolResult {
-        rmcp::model::CallToolResult::success(vec![rmcp::model::Content::text(text.to_string())])
+        rmcp::model::CallToolResult::success(vec![rmcp::model::ContentBlock::text(
+            text.to_string(),
+        )])
     }
 
     #[test]

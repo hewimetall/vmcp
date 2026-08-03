@@ -77,15 +77,12 @@ impl MockDelay {
             "start_us": start_us as u64,
             "end_us": end_us as u64,
         });
-        CallToolResult::success(vec![Content::text(body.to_string())])
+        CallToolResult::success(vec![ContentBlock::text(body.to_string())])
     }
 
     /// Read-only delay probe (sidecar marks it readOnly → GraphQL `Query`).
-    /// Marked task-capable so integration tests can exercise `run_task`.
-    #[tool(
-        description = "Sleep `ms` then report the served wall-clock window.",
-        execution(task_support = "optional")
-    )]
+    /// Sidecar marks it task-capable so integration tests can exercise `run_task`.
+    #[tool(description = "Sleep `ms` then report the served wall-clock window.")]
     async fn delay_read(
         &self,
         Parameters(args): Parameters<DelayArgs>,

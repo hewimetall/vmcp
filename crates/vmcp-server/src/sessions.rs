@@ -225,7 +225,10 @@ impl SessionRegistry {
         }
     }
 
-    pub fn gc(&self, now: u64, idle_ttl_ms: u64) {
+    /// Mark idle active sessions as closed. Returns the ids that transitioned
+    /// so the caller can tear down the matching rmcp transport sessions
+    /// (and release their FDs / SSE channels).
+    pub fn gc(&self, now: u64, idle_ttl_ms: u64) -> Vec<String> {
         let mut closed = Vec::new();
         for s in self.inner.iter() {
             let last = s.last_seen_ms.load(Ordering::Relaxed);
@@ -237,9 +240,10 @@ impl SessionRegistry {
                 }
             }
         }
-        for id in closed {
-            self.persist(&id);
+        for id in &closed {
+            self.persist(id);
         }
+        closed
     }
 
     pub fn snapshot(&self) -> Vec<SessionSnapshot> {
@@ -293,9 +297,12 @@ mod tests {
         for s in r.inner.iter() {
             s.last_seen_ms.store(0, Ordering::Relaxed);
         }
-        r.gc(now_ms(), 1000);
+        let closed = r.gc(now_ms(), 1000);
+        assert_eq!(closed, vec!["sess1".to_string()]);
         let snaps = r.snapshot();
         assert_eq!(snaps[0].status, SessionStatus::Closed);
+        // Second pass: already closed → empty.
+        assert!(r.gc(now_ms(), 1000).is_empty());
     }
 
     #[test]

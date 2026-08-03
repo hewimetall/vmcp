@@ -60,7 +60,6 @@ gc_interval_secs = {gc}
 }
 
 struct HeldSession {
-    session_id: String,
     /// Unread SSE body — keeps a server-side FD / stream alive.
     _sse: reqwest::Response,
 }
@@ -145,10 +144,7 @@ async fn open_held_session(
         return Err(format!("sse status {}", sse.status()));
     }
 
-    Ok(HeldSession {
-        session_id,
-        _sse: sse,
-    })
+    Ok(HeldSession { _sse: sse })
 }
 
 #[tokio::test]

@@ -897,6 +897,59 @@ mod tests {
         assert_eq!(synth2["isError"], serde_json::json!(true));
     }
 
+    #[test]
+    fn detailed_task_payloads_cover_terminal_variants() {
+        let (_dir, s) = tmp_store();
+
+        // Failed with no result_json → error_object(message).
+        let failed = s.create("a", "s", "t").unwrap();
+        s.fail(&failed, "boom", None);
+        let g = s.get(&failed, "a").unwrap();
+        assert_eq!(g.task.status(), TaskStatus::Failed);
+        match &g.task.payload {
+            TaskPayload::Failed { error } => {
+                assert_eq!(error.get("message").and_then(|v| v.as_str()), Some("boom"));
+            }
+            other => panic!("expected Failed payload, got {other:?}"),
+        }
+
+        // Failed with non-object result_json also falls back to error_object.
+        let failed2 = s.create("a", "s", "t").unwrap();
+        s.fail(&failed2, "x", Some(Value::String("not-object".into())));
+        let g = s.get(&failed2, "a").unwrap();
+        assert!(matches!(g.task.payload, TaskPayload::Failed { .. }));
+
+        // Cancelled payload.
+        let cancelled = s.create("a", "s", "t").unwrap();
+        s.cancel(&cancelled, "a").unwrap();
+        let g = s.get(&cancelled, "a").unwrap();
+        assert!(matches!(g.task.payload, TaskPayload::Cancelled));
+
+        // Completed with null JSON → empty result object.
+        let done = s.create("a", "s", "t").unwrap();
+        s.complete(&done, Value::Null, None);
+        let g = s.get(&done, "a").unwrap();
+        match &g.task.payload {
+            TaskPayload::Completed { result } => assert!(result.is_empty()),
+            other => panic!("expected Completed payload, got {other:?}"),
+        }
+
+        // InputRequired via direct status write (no public setter).
+        // DetailedTask::new remaps payload Working → status Working, but the
+        // InputRequired match arm in to_detailed_task still runs.
+        let ir = s.create("a", "s", "t").unwrap();
+        {
+            let conn = s.conn.lock();
+            conn.execute(
+                "UPDATE tasks SET status = 'input_required' WHERE task_id = ?1",
+                params![ir],
+            )
+            .unwrap();
+        }
+        let g = s.get(&ir, "a").unwrap();
+        assert!(matches!(g.task.payload, TaskPayload::Working));
+    }
+
     fn runner_with_allowlist(keys: HashSet<TaskToolKey>) -> (tempfile::TempDir, TaskRunner) {
         let dir = tempdir().unwrap();
         let db = dir.path().join("tasks.db");

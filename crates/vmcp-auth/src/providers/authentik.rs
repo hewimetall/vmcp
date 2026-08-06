@@ -353,10 +353,19 @@ mod tests {
         assert_eq!(err, AuthReject::MissingBearer);
     }
 
-    /// Local JWKS HTTP mock + RS256 JWT covering Authentik JWT claim/group paths.
-    async fn spawn_jwks_server(
-        jwks_json: serde_json::Value,
-    ) -> (String, tokio::task::JoinHandle<()>) {
+    /// Local JWKS HTTP mock. Aborts the accept loop on drop (no task leak in tests).
+    struct JwksServer {
+        url: String,
+        handle: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for JwksServer {
+        fn drop(&mut self) {
+            self.handle.abort();
+        }
+    }
+
+    async fn spawn_jwks_server(jwks_json: serde_json::Value) -> JwksServer {
         use axum::{routing::get, Json, Router};
         use tokio::net::TcpListener;
 
@@ -372,7 +381,10 @@ mod tests {
         let handle = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
-        (format!("http://{addr}/jwks"), handle)
+        JwksServer {
+            url: format!("http://{addr}/jwks"),
+            handle,
+        }
     }
 
     fn sign_jwt(mgr: &crate::jwks::JwksManager, claims: serde_json::Value) -> String {
@@ -390,7 +402,7 @@ mod tests {
 
         let mgr = JwksManager::new_with_fresh("ak-jwt").unwrap();
         let jwks_body = serde_json::json!({ "keys": mgr.jwks() });
-        let (jwks_url, _server) = spawn_jwks_server(jwks_body).await;
+        let server = spawn_jwks_server(jwks_body).await;
 
         let issuer = "https://auth.test/application/o/mcp/";
         let audience = "https://mcp.test/mcp";
@@ -400,7 +412,7 @@ mod tests {
 
         let auth = AuthentikAuth::new(AuthentikConfig {
             issuer: issuer.into(),
-            jwks_url,
+            jwks_url: server.url.clone(),
             audiences: vec![audience.into()],
             resource: audience.into(),
             accept_bearer: true,
@@ -449,8 +461,7 @@ mod tests {
         use axum::http::header;
 
         let mgr = JwksManager::new_with_fresh("ak-jwt2").unwrap();
-        let (jwks_url, _server) =
-            spawn_jwks_server(serde_json::json!({ "keys": mgr.jwks() })).await;
+        let server = spawn_jwks_server(serde_json::json!({ "keys": mgr.jwks() })).await;
         let issuer = "https://auth.test/application/o/mcp/";
         let audience = "https://mcp.test/mcp";
         let mut group_scopes = BTreeMap::new();
@@ -458,7 +469,7 @@ mod tests {
 
         let auth = AuthentikAuth::new(AuthentikConfig {
             issuer: issuer.into(),
-            jwks_url,
+            jwks_url: server.url.clone(),
             audiences: vec![audience.into()],
             resource: audience.into(),
             accept_bearer: true,

@@ -31,4 +31,4 @@ pub use providers::authentik::{AuthentikAuth, AuthentikConfig};
 pub use providers::local::LocalAuth;
 pub use router::{build_external_rs_router, build_router};
 pub use scopes::ScopePolicy;
-pub use state::{AuthState, DcrPolicy, RenameClientError};
+pub use state::{AuthState, DcrPolicy, RenameClientError, AUTH_EPHEMERAL_MAX_AGE};

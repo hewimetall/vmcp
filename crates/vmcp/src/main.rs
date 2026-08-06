@@ -374,6 +374,26 @@ async fn serve_http(
         });
     }
 
+    // Local OAuth AS: purge abandoned consent sessions + unused auth codes.
+    // Without this, `/authorize` abandons grow `AuthState::{consents,codes}` forever.
+    if use_local_as {
+        let auth = auth_state.clone();
+        let interval_secs = cfg.recorder.gc_interval_secs.max(1);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            loop {
+                tick.tick().await;
+                let removed = auth.gc(vmcp_auth::AUTH_EPHEMERAL_MAX_AGE);
+                if removed > 0 {
+                    tracing::debug!(
+                        removed,
+                        "auth GC: purged expired OAuth codes/consent sessions"
+                    );
+                }
+            }
+        });
+    }
+
     let mut allowed_hosts: Vec<String> = vec!["localhost".into(), "127.0.0.1".into(), "::1".into()];
     if let Ok(url) = url::Url::parse(&cfg.public_base_url) {
         if let Some(h) = url.host_str() {

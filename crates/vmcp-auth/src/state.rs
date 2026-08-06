@@ -59,6 +59,13 @@ pub struct AuthState {
     pub dcr_register_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
+/// Max age for ephemeral OAuth flow state (`codes` + `consents`).
+///
+/// Matches the authorization-code TTL enforced at `/token` (10 minutes).
+/// Abandoned `/authorize` → consent sessions and unused codes must be purged
+/// on this cadence or the DashMaps grow without bound (resource leak).
+pub const AUTH_EPHEMERAL_MAX_AGE: Duration = Duration::from_secs(600);
+
 /// Limits for `POST /register`. Defaults match historical open registration.
 #[derive(Debug, Clone)]
 pub struct DcrPolicy {
@@ -208,10 +215,27 @@ impl AuthState {
     }
 
     /// Purge codes and consent sessions older than `max_age`.
-    pub fn gc(&self, max_age: Duration) {
+    ///
+    /// Returns how many entries were removed (codes + consents). Call from a
+    /// background task — see `AUTH_EPHEMERAL_MAX_AGE`.
+    pub fn gc(&self, max_age: Duration) -> usize {
         let cutoff = chrono::Utc::now() - chrono::Duration::from_std(max_age).unwrap();
-        self.codes.retain(|_, v| v.issued_at > cutoff);
-        self.consents.retain(|_, v| v.created_at > cutoff);
+        let mut removed = 0usize;
+        self.codes.retain(|_, v| {
+            let keep = v.issued_at > cutoff;
+            if !keep {
+                removed += 1;
+            }
+            keep
+        });
+        self.consents.retain(|_, v| {
+            let keep = v.created_at > cutoff;
+            if !keep {
+                removed += 1;
+            }
+            keep
+        });
+        removed
     }
 
     /// Snapshot of all currently-registered OAuth dynamic clients.
@@ -456,8 +480,32 @@ mod tests {
                 created_at: old,
             },
         );
-        state.gc(Duration::from_secs(60));
+        let removed = state.gc(Duration::from_secs(60));
+        assert_eq!(removed, 2);
         assert!(state.codes.is_empty());
         assert!(state.consents.is_empty());
+
+        // Fresh entries survive a short max_age.
+        let now = Utc::now();
+        state.codes.insert(
+            "fresh".into(),
+            AuthCodeRecord {
+                code: "fresh".into(),
+                client_id: "c".into(),
+                redirect_uri: "http://127.0.0.1/cb".into(),
+                code_challenge: "x".into(),
+                code_challenge_method: "S256".into(),
+                scope: "mcp:use".into(),
+                resource: None,
+                issued_at: now,
+            },
+        );
+        assert_eq!(state.gc(AUTH_EPHEMERAL_MAX_AGE), 0);
+        assert!(state.codes.contains_key("fresh"));
+    }
+
+    #[test]
+    fn ephemeral_max_age_matches_token_code_ttl() {
+        assert_eq!(AUTH_EPHEMERAL_MAX_AGE.as_secs(), 600);
     }
 }

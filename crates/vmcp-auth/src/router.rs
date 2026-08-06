@@ -515,8 +515,10 @@ async fn token_endpoint(
         .ok_or_else(|| AuthError::BadRequest("invalid code".into()))?
         .1;
 
-    // TTL: 10 minutes.
-    if (Utc::now() - rec.issued_at).num_seconds() > 600 {
+    // TTL: same window as [`crate::state::AUTH_EPHEMERAL_MAX_AGE`] / background GC.
+    if (Utc::now() - rec.issued_at).num_seconds()
+        > crate::state::AUTH_EPHEMERAL_MAX_AGE.as_secs() as i64
+    {
         return Err(AuthError::BadRequest("expired code".into()));
     }
     if rec.client_id != client_id {

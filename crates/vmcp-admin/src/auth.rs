@@ -34,11 +34,12 @@ pub struct AdminAuth {
 }
 
 /// Runtime policy for the `/admin` gate (from `[auth.admin]`).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub enum AdminAuthPolicy {
     /// No authentication.
     None,
     /// HTTP Basic against the master password hash on [`AdminState`].
+    #[default]
     Basic,
     /// Authentik forward-auth headers.
     Authentik {
@@ -47,12 +48,6 @@ pub enum AdminAuthPolicy {
         /// Exact group names (any one is enough).
         required_groups: Vec<String>,
     },
-}
-
-impl Default for AdminAuthPolicy {
-    fn default() -> Self {
-        Self::Basic
-    }
 }
 
 pub async fn require_admin_auth(
@@ -66,7 +61,7 @@ pub async fn require_admin_auth(
                 subject: "anonymous".into(),
                 source: AdminAuthSource::None,
             });
-            return next.run(req).await;
+            next.run(req).await
         }
         AdminAuthPolicy::Basic => {
             // Prefer the real peer address from the listener; fall back to loopback

@@ -602,3 +602,497 @@ template: |
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// Empty list outputs (mcp / tool / skill) succeed with stderr hints.
+#[test]
+fn flow_list_empty_states() {
+    let dir = tmp_dir("empty");
+    let cfg = scaffold(&dir);
+
+    let list_mcp = run(&cfg, &["list", "mcp"]);
+    assert_ok(&list_mcp, "list mcp empty");
+    assert!(
+        String::from_utf8_lossy(&list_mcp.stderr).contains("no upstreams"),
+        "stderr={}",
+        String::from_utf8_lossy(&list_mcp.stderr)
+    );
+
+    let list_tool = run(&cfg, &["list", "tool"]);
+    assert_ok(&list_tool, "list tool empty");
+    assert!(
+        String::from_utf8_lossy(&list_tool.stderr).contains("no sidecar"),
+        "stderr={}",
+        String::from_utf8_lossy(&list_tool.stderr)
+    );
+
+    let list_skill = run(&cfg, &["list", "skill"]);
+    assert_ok(&list_skill, "list skill empty");
+    assert!(
+        String::from_utf8_lossy(&list_skill.stderr).contains("no skills"),
+        "stderr={}",
+        String::from_utf8_lossy(&list_skill.stderr)
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// `list tool` without server aggregates across multiple sidecars.
+#[test]
+fn flow_list_tool_all_servers() {
+    let dir = tmp_dir("listall");
+    let cfg = scaffold(&dir);
+
+    for (name, tool) in [("alpha", "a_tool"), ("beta", "b_tool")] {
+        assert_ok(
+            &run(
+                &cfg,
+                &[
+                    "add",
+                    "mcp",
+                    "--no-spec",
+                    "--transport",
+                    "http",
+                    name,
+                    &format!("https://example.com/{name}"),
+                ],
+            ),
+            &format!("add {name}"),
+        );
+        assert_ok(
+            &run(&cfg, &["add", "tool", name, tool, "--read-only"]),
+            &format!("add tool {name}.{tool}"),
+        );
+    }
+
+    let out = run(&cfg, &["list", "tool"]);
+    assert_ok(&out, "list tool all");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("alpha.a_tool"), "{stdout}");
+    assert!(stdout.contains("beta.b_tool"), "{stdout}");
+
+    let filtered = run(&cfg, &["list", "tool", "alpha"]);
+    assert_ok(&filtered, "list tool alpha");
+    let f = String::from_utf8_lossy(&filtered.stdout);
+    assert!(f.contains("alpha.a_tool"), "{f}");
+    assert!(!f.contains("beta"), "{f}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Tool upsert overwrites flags; get/remove missing tool paths.
+#[test]
+fn flow_tool_upsert_and_missing_errors() {
+    let dir = tmp_dir("toolupsert");
+    let cfg = scaffold(&dir);
+
+    assert_ok(
+        &run(
+            &cfg,
+            &[
+                "add",
+                "mcp",
+                "--no-spec",
+                "--transport",
+                "http",
+                "srv",
+                "https://example.com/mcp",
+            ],
+        ),
+        "add mcp",
+    );
+
+    assert_err(
+        &run(&cfg, &["get", "tool", "srv", "missing"]),
+        "get before sidecar",
+        "no sidecar",
+    );
+    assert_err(
+        &run(&cfg, &["remove", "tool", "srv", "missing"]),
+        "remove before sidecar",
+        "no sidecar",
+    );
+
+    assert_ok(
+        &run(
+            &cfg,
+            &[
+                "add",
+                "tool",
+                "srv",
+                "do_work",
+                "--task-support",
+                "required",
+                "--description",
+                "first",
+            ],
+        ),
+        "add tool write",
+    );
+    let sc = load_sidecar(Some(&dir.join("specs/srv.json")))
+        .unwrap()
+        .unwrap();
+    let t = sc.tools.iter().find(|t| t.name == "do_work").unwrap();
+    assert!(!t.read_only);
+    assert_eq!(t.task_support, Some(vmcp_registry::TaskSupportHint::Required));
+    assert_eq!(t.description.as_deref(), Some("first"));
+
+    // Upsert flips to read_only + forbidden + new description
+    assert_ok(
+        &run(
+            &cfg,
+            &[
+                "add",
+                "tool",
+                "srv",
+                "do_work",
+                "--read-only",
+                "--task-support",
+                "forbidden",
+                "--description",
+                "second",
+            ],
+        ),
+        "upsert tool",
+    );
+    let sc = load_sidecar(Some(&dir.join("specs/srv.json")))
+        .unwrap()
+        .unwrap();
+    assert_eq!(sc.tools.len(), 1, "upsert must not duplicate");
+    let t = &sc.tools[0];
+    assert!(t.read_only);
+    assert_eq!(
+        t.task_support,
+        Some(vmcp_registry::TaskSupportHint::Forbidden)
+    );
+    assert_eq!(t.description.as_deref(), Some("second"));
+
+    assert_err(
+        &run(&cfg, &["get", "tool", "srv", "nope"]),
+        "get unknown tool",
+        "unknown tool",
+    );
+    assert_err(
+        &run(&cfg, &["remove", "tool", "srv", "nope"]),
+        "remove unknown tool",
+        "unknown",
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// stdio `--env` / `--cwd` persist; transport flag mismatches rejected.
+#[test]
+fn flow_stdio_env_cwd_and_flag_mismatches() {
+    let dir = tmp_dir("stdioenv");
+    let cfg = scaffold(&dir);
+    let cwd = dir.join("workdir");
+    fs::create_dir_all(&cwd).unwrap();
+
+    assert_ok(
+        &run(
+            &cfg,
+            &[
+                "add",
+                "mcp",
+                "--no-spec",
+                "--transport",
+                "stdio",
+                "--env",
+                "FOO=bar",
+                "--env",
+                "BAZ=qux",
+                "--cwd",
+                cwd.to_str().unwrap(),
+                "--description",
+                "with env",
+                "envy",
+                "--",
+                "true",
+            ],
+        ),
+        "add stdio env",
+    );
+    let reg = load_registry_raw(&dir.join("registry.json")).unwrap();
+    let u = &reg.upstreams[0];
+    assert_eq!(u.env.get("FOO").map(String::as_str), Some("bar"));
+    assert_eq!(u.env.get("BAZ").map(String::as_str), Some("qux"));
+    assert_eq!(u.cwd.as_deref(), Some(cwd.as_path()));
+    assert_eq!(u.description.as_deref(), Some("with env"));
+
+    assert_err(
+        &run(
+            &cfg,
+            &[
+                "add",
+                "mcp",
+                "--no-spec",
+                "--transport",
+                "stdio",
+                "--bearer",
+                "tok",
+                "x",
+                "--",
+                "true",
+            ],
+        ),
+        "stdio+bearer",
+        "--bearer is only valid",
+    );
+    assert_err(
+        &run(
+            &cfg,
+            &[
+                "add",
+                "mcp",
+                "--no-spec",
+                "--transport",
+                "http",
+                "--cwd",
+                cwd.to_str().unwrap(),
+                "y",
+                "https://example.com/mcp",
+            ],
+        ),
+        "http+cwd",
+        "--cwd is only valid",
+    );
+    assert_err(
+        &run(
+            &cfg,
+            &[
+                "add",
+                "mcp",
+                "--no-spec",
+                "--transport",
+                "http",
+                "z",
+                "https://a/mcp",
+                "https://b/mcp",
+            ],
+        ),
+        "http extra url",
+        "single URL",
+    );
+    assert_err(
+        &run(
+            &cfg,
+            &[
+                "add",
+                "mcp",
+                "--no-spec",
+                "--transport",
+                "stdio",
+                "--env",
+                "NOEQUALS",
+                "bad",
+                "--",
+                "true",
+            ],
+        ),
+        "bad env",
+        "KEY=VALUE",
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Skill validation: missing template, YAML name mismatch, unknown get.
+#[test]
+fn flow_skill_validation_errors() {
+    let dir = tmp_dir("skillerr");
+    let cfg = scaffold(&dir);
+
+    assert_err(
+        &run(
+            &cfg,
+            &["add", "skill", "bare", "--description", "no template"],
+        ),
+        "skill no template",
+        "--template",
+    );
+
+    let src = dir.join("mismatch.yaml");
+    fs::write(
+        &src,
+        "name: other\ndescription: x\ntemplate: hi\n",
+    )
+    .unwrap();
+    assert_err(
+        &run(
+            &cfg,
+            &[
+                "add",
+                "skill",
+                "wanted",
+                "--description",
+                "x",
+                "--file",
+                src.to_str().unwrap(),
+            ],
+        ),
+        "yaml name mismatch",
+        "does not match",
+    );
+
+    assert_err(
+        &run(&cfg, &["get", "skill", "ghost"]),
+        "get missing skill",
+        "unknown skill",
+    );
+
+    // Empty YAML name/description → filled from CLI args
+    let anon = dir.join("anon.yaml");
+    fs::write(&anon, "name: \"\"\ndescription: \"\"\ntemplate: body\n").unwrap();
+    assert_ok(
+        &run(
+            &cfg,
+            &[
+                "add",
+                "skill",
+                "anon",
+                "--description",
+                "from-cli",
+                "--file",
+                anon.to_str().unwrap(),
+            ],
+        ),
+        "skill anon file",
+    );
+    let yaml = fs::read_to_string(dir.join("skills/anon.yaml")).unwrap();
+    assert!(yaml.contains("name: anon") || yaml.contains("name: \"anon\""), "{yaml}");
+    assert!(yaml.contains("from-cli"), "{yaml}");
+    assert!(yaml.contains("body"), "{yaml}");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Probe refuses missing `${VAR}` without writing registry; remove unknown mcp.
+#[test]
+fn flow_probe_missing_env_and_remove_unknown() {
+    let dir = tmp_dir("probeenv");
+    let cfg = scaffold(&dir);
+
+    let out = run(
+        &cfg,
+        &[
+            "add",
+            "mcp",
+            "--transport",
+            "stdio",
+            "--env",
+            "TOKEN=${MISSING_VMCP_PROBE_VAR_XYZ}",
+            "needs_env",
+            "--",
+            "true",
+        ],
+    );
+    assert!(
+        !out.status.success(),
+        "probe expand should fail without MISSING_VMCP_PROBE_VAR_XYZ"
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("expand") || combined.contains("MISSING") || combined.contains("env"),
+        "unexpected error:\n{combined}"
+    );
+    let reg = load_registry_raw(&dir.join("registry.json")).unwrap();
+    assert!(reg.upstreams.is_empty(), "must not write on expand failure");
+
+    assert_err(
+        &run(&cfg, &["remove", "mcp", "ghost"]),
+        "remove unknown mcp",
+        "unknown",
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// `add tasks` ignores commented `# [tasks]` and fills missing `enabled`.
+#[test]
+fn flow_add_tasks_ignores_comment_and_fills_enabled() {
+    let dir = tmp_dir("tasks2");
+    let cfg = scaffold(&dir);
+
+    let mut toml = fs::read_to_string(&cfg).unwrap();
+    toml.push_str("\n# [tasks]\n# enabled = false\n\n[tasks]\ndb_path = \"state/tasks.db\"\n");
+    fs::write(&cfg, &toml).unwrap();
+
+    assert_ok(&run(&cfg, &["add", "tasks"]), "add tasks fill enabled");
+    let text = fs::read_to_string(&cfg).unwrap();
+    // Real table once (commented header still present as comment)
+    assert_eq!(
+        text.lines().filter(|l| l.trim() == "[tasks]").count(),
+        1,
+        "must not add second [tasks]:\n{text}"
+    );
+    // Locate the real `[tasks]` table (not the `# [tasks]` comment).
+    let mut tasks_body = String::new();
+    let mut in_tasks = false;
+    for line in text.lines() {
+        if line.trim() == "[tasks]" {
+            in_tasks = true;
+            continue;
+        }
+        if in_tasks {
+            if line.trim().starts_with('[') && line.trim().ends_with(']') {
+                break;
+            }
+            tasks_body.push_str(line);
+            tasks_body.push('\n');
+        }
+    }
+    assert!(
+        tasks_body.lines().any(|l| l.trim() == "enabled = true"),
+        "expected enabled=true in:\n{tasks_body}\nfull:\n{text}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Disabled upstream is flagged in `list mcp`; get shows sidecar_spec after probe.
+#[test]
+fn flow_list_disabled_and_get_shows_sidecar() {
+    let dir = tmp_dir("disabled");
+    let cfg = scaffold(&dir);
+    let mock = mock_bin();
+
+    assert_ok(
+        &run(
+            &cfg,
+            &[
+                "add",
+                "mcp",
+                "--transport",
+                "stdio",
+                "mock",
+                "--",
+                mock.to_str().unwrap(),
+            ],
+        ),
+        "add mcp probe",
+    );
+
+    // Flip enabled=false in registry
+    let mut reg = load_registry_raw(&dir.join("registry.json")).unwrap();
+    reg.upstreams[0].enabled = false;
+    vmcp_registry::save_registry_atomic(&dir.join("registry.json"), &reg).unwrap();
+
+    let list = run(&cfg, &["list", "mcp"]);
+    assert_ok(&list, "list disabled");
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(stdout.contains("mock"), "{stdout}");
+    assert!(stdout.contains("[disabled]"), "{stdout}");
+
+    let get = run(&cfg, &["get", "mcp", "mock"]);
+    assert_ok(&get, "get mcp");
+    let g = String::from_utf8_lossy(&get.stdout);
+    assert!(g.contains("sidecar_spec"), "{g}");
+    assert!(g.contains("mock.json"), "{g}");
+    assert!(g.contains("\"enabled\": false") || g.contains("\"enabled\":false"), "{g}");
+
+    let _ = fs::remove_dir_all(&dir);
+}

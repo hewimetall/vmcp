@@ -45,8 +45,8 @@ vmcp init                                      # vmcp.toml + пустой regist
 vmcp add mcp --transport http notion https://mcp.notion.com/mcp
 vmcp add mcp --bearer '${API_KEY}' --transport http secure https://api.example.com/mcp
 vmcp add mcp --transport stdio time -- uvx mcp-server-time
-vmcp add tool time get_current_time --read-only
-vmcp add tool presentation build_presentation --task-support optional
+# ↑ connect + tools/list → пишет specs/<name>.json и sidecar_spec (или --no-spec)
+vmcp add tool presentation build_presentation --task-support optional   # ручной upsert
 vmcp add skill search_docs --description 'docs' --template 'Call query_graphql…'
 vmcp add tasks                                 # [tasks] enabled = true в vmcp.toml
 vmcp list mcp|tool|skill
@@ -54,7 +54,7 @@ vmcp get mcp time
 vmcp remove tool presentation build_presentation
 ```
 
-`vmcp mcp add …` — алиас на `vmcp add mcp …`. Опции (`--transport`, `--env`, `--bearer`, …) — **до** имени сервера; для stdio команда и args — после `--`. Пути из `--config` / `VMCP_CONFIG`. `${ENV}` в URL/bearer не раскрываются при записи CLI. Sidecar tools пишутся в `spec_dir/<server>.json` и линкуются в `sidecar_spec`.
+`vmcp mcp add …` — алиас на `vmcp add mcp …`. Опции (`--transport`, `--env`, `--bearer`, …) — **до** имени сервера; для stdio команда и args — после `--`. Пути из `--config` / `VMCP_CONFIG`. `${ENV}` в registry не раскрываются при записи; для probe env должен быть задан (иначе `--no-spec`). Sidecar: автоген из `tools/list` или ручной `add tool`.
 
 Нет файла → пустой пул (шлюз стартует). Единственный ключ списка — **`upstreams`** (legacy `servers` в 1.0 = ошибка парсинга).
 

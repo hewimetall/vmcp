@@ -126,7 +126,7 @@ async fn main() -> Result<()> {
             return cli::run_init(dir.as_deref(), force);
         }
         Command::Add { command } => {
-            return cli::run_add(cli.config.as_deref(), command);
+            return cli::run_add(cli.config.as_deref(), command).await;
         }
         Command::List { command } => {
             return cli::run_list(cli.config.as_deref(), command);
@@ -138,7 +138,7 @@ async fn main() -> Result<()> {
             return cli::run_remove(cli.config.as_deref(), command);
         }
         Command::Mcp { command } => {
-            return cli::run_mcp(cli.config.as_deref(), command);
+            return cli::run_mcp(cli.config.as_deref(), command).await;
         }
         Command::HashPassword { password } => {
             let p = match password {

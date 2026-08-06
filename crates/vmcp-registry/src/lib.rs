@@ -315,6 +315,13 @@ pub fn expand_env(input: &str) -> Result<String, RegistryError> {
     Ok(out)
 }
 
+/// Expand `${ENV}` in `url` / `bearer` / `env` on a clone (CLI probe path).
+pub fn expand_upstream_spec(spec: &UpstreamSpec) -> Result<UpstreamSpec, RegistryError> {
+    let mut out = spec.clone();
+    expand_upstream(&mut out)?;
+    Ok(out)
+}
+
 fn expand_upstream(spec: &mut UpstreamSpec) -> Result<(), RegistryError> {
     if let Some(url) = spec.url.as_mut() {
         *url = expand_env(url)?;
@@ -541,6 +548,30 @@ pub fn remove_sidecar_tool(
 /// Default on-disk name for a server's sidecar under `spec_dir`.
 pub fn sidecar_filename(server: &str) -> String {
     format!("{server}.json")
+}
+
+/// Build a sidecar from a live `tools/list` snapshot (CLI `add mcp` codegen).
+///
+/// `task_support = forbidden` is omitted (sidecar default); descriptions are
+/// kept when present so operators can skim the file.
+pub fn sidecar_from_cached_tools(server: &str, tools: &[CachedTool]) -> SidecarSpec {
+    let mut tools: Vec<SidecarTool> = tools
+        .iter()
+        .map(|t| SidecarTool {
+            name: t.name.clone(),
+            read_only: t.read_only,
+            description: t.description.clone(),
+            task_support: match t.task_support {
+                TaskSupportHint::Forbidden => None,
+                other => Some(other),
+            },
+        })
+        .collect();
+    tools.sort_by(|a, b| a.name.cmp(&b.name));
+    SidecarSpec {
+        server: server.to_string(),
+        tools,
+    }
 }
 
 /// Shape-only drift check: do the tool names + JSON schemas + read_only +
@@ -953,5 +984,32 @@ mod tests {
         assert!(v.get("url").is_none());
         assert_eq!(v["enabled"], true);
         assert_eq!(v["command"], "uvx");
+    }
+
+    #[test]
+    fn sidecar_from_cached_tools_omits_forbidden_task() {
+        let tools = vec![
+            CachedTool {
+                name: "read".into(),
+                description: Some("r".into()),
+                input_schema: json!({}),
+                read_only: true,
+                task_support: TaskSupportHint::Forbidden,
+            },
+            CachedTool {
+                name: "build".into(),
+                description: None,
+                input_schema: json!({}),
+                read_only: false,
+                task_support: TaskSupportHint::Optional,
+            },
+        ];
+        let sc = sidecar_from_cached_tools("p", &tools);
+        assert_eq!(sc.server, "p");
+        assert_eq!(sc.tools.len(), 2);
+        assert_eq!(sc.tools[0].name, "build"); // sorted
+        assert_eq!(sc.tools[0].task_support, Some(TaskSupportHint::Optional));
+        assert_eq!(sc.tools[1].task_support, None);
+        assert!(sc.tools[1].read_only);
     }
 }

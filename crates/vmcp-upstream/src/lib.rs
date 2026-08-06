@@ -785,18 +785,13 @@ pub fn spec_requires_respawn(a: &UpstreamSpec, b: &UpstreamSpec) -> bool {
         || a.enabled != b.enabled
 }
 
-/// Spawn a single upstream. Public so tests can do one-shot spawns.
-pub async fn spawn_one(
-    spec: UpstreamSpec,
-    bus: Arc<Bus>,
-    spec_dir: Option<&std::path::Path>,
-) -> Result<UpstreamSession> {
-    let handler = ForwardingClient::new(spec.name.clone(), bus.clone());
+type UpstreamClient = RunningService<RoleClient, ForwardingClient>;
 
-    // Transport branch: a remote Streamable-HTTP MCP server or a
-    // spawned stdio child process. Both yield the same RunningService type, so
-    // the rest of the pool is transport-agnostic.
-    let client = match spec.transport {
+/// Connect to one upstream (stdio or HTTP) and complete the MCP handshake.
+async fn connect_upstream(spec: &UpstreamSpec, bus: Arc<Bus>) -> Result<UpstreamClient> {
+    let handler = ForwardingClient::new(spec.name.clone(), bus);
+
+    match spec.transport {
         vmcp_registry::UpstreamTransport::Http => {
             let url = spec.url.clone().context("http upstream requires `url`")?;
             debug!(name = %spec.name, %url, "connecting http upstream");
@@ -808,7 +803,7 @@ pub async fn spawn_one(
             handler
                 .serve(transport)
                 .await
-                .context("MCP handshake with http upstream")?
+                .context("MCP handshake with http upstream")
         }
         vmcp_registry::UpstreamTransport::Stdio => {
             debug!(name = %spec.name, command = %spec.command, args = ?spec.args, "spawning upstream");
@@ -822,9 +817,46 @@ pub async fn spawn_one(
             handler
                 .serve(transport)
                 .await
-                .context("MCP handshake with upstream")?
+                .context("MCP handshake with upstream")
         }
-    };
+    }
+}
+
+fn cached_tools_from_live(live_tools: &[Tool]) -> Vec<CachedTool> {
+    live_tools
+        .iter()
+        .map(|t| CachedTool {
+            name: t.name.to_string(),
+            description: t.description.as_ref().map(|s| s.to_string()),
+            input_schema: serde_json::to_value(&t.input_schema)
+                .unwrap_or_else(|_| serde_json::json!({"type": "object"})),
+            read_only: tool_read_only_hint(t),
+            task_support: tool_task_support_hint(t),
+        })
+        .collect()
+}
+
+/// One-shot connect → `tools/list` → disconnect. Used by `vmcp add mcp` to
+/// generate `specs/<server>.json` without keeping a long-lived pool session.
+pub async fn probe_upstream_tools(spec: UpstreamSpec) -> Result<Vec<CachedTool>> {
+    let bus = Bus::new(16);
+    let client = connect_upstream(&spec, bus).await?;
+    let live_tools = client
+        .list_all_tools()
+        .await
+        .context("upstream tools/list")?;
+    // Dropping `client` closes the transport / kills stdio child (kill_on_drop).
+    drop(client);
+    Ok(cached_tools_from_live(&live_tools))
+}
+
+/// Spawn a single upstream. Public so tests can do one-shot spawns.
+pub async fn spawn_one(
+    spec: UpstreamSpec,
+    bus: Arc<Bus>,
+    spec_dir: Option<&std::path::Path>,
+) -> Result<UpstreamSession> {
+    let client = connect_upstream(&spec, bus).await?;
 
     let live_tools = client
         .list_all_tools()
@@ -847,17 +879,7 @@ pub async fn spawn_one(
     let resolved_prompts = resolve_prompts(&spec.name, live_prompts);
 
     let sidecar = resolve_sidecar(&spec, spec_dir)?;
-    let cached: Vec<CachedTool> = live_tools
-        .iter()
-        .map(|t| CachedTool {
-            name: t.name.to_string(),
-            description: t.description.as_ref().map(|s| s.to_string()),
-            input_schema: serde_json::to_value(&t.input_schema)
-                .unwrap_or_else(|_| serde_json::json!({"type": "object"})),
-            read_only: tool_read_only_hint(t),
-            task_support: tool_task_support_hint(t),
-        })
-        .collect();
+    let cached = cached_tools_from_live(&live_tools);
     let (merged, _audit) = apply_sidecar(cached, sidecar.as_ref());
 
     let resolved: Vec<ResolvedTool> = merged

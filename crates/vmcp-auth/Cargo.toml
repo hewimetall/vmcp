@@ -27,8 +27,9 @@ percent-encoding = { workspace = true }
 rsa = { version = "0.9", features = ["pem"] }
 base64 = "0.22"
 sha2 = "0.10"
-# Authentik / external OIDC: JWKS fetch + cache (jsonwebtoken 9 compatible).
-async-oidc-jwt-validator = "0.1.2"
+# Authentik remote JWKS over the same rustls stack as upstream MCP clients —
+# never pull OpenSSL via reqwest default native-tls.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

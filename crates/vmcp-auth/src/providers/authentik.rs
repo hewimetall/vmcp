@@ -1,5 +1,5 @@
-//! Authentik provider via [`async_oidc_jwt_validator`] (JWKS cache + OIDC checks)
-//! plus optional forward-auth headers from a trusted gateway.
+//! Authentik provider: remote JWKS (rustls `reqwest`) + optional forward-auth
+//! headers from a trusted gateway.
 //!
 //! Contract:
 //! 1. Trust gateway headers only when present — never invent anonymous / default role.
@@ -9,14 +9,15 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use async_oidc_jwt_validator::{Algorithm, OidcConfig, OidcValidator, Validation};
 use axum::http::{HeaderMap, HeaderName};
 use chrono::Utc;
+use jsonwebtoken::{Algorithm, Validation};
 use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::facade::{AuthFacade, AuthIdentity, AuthReject, AuthSource};
 use crate::groups::{scopes_from_groups, split_groups};
+use crate::remote_jwks::RemoteJwks;
 
 /// Configuration snapshot for Authentik-backed auth.
 #[derive(Debug, Clone)]
@@ -72,7 +73,7 @@ pub struct AuthentikAuth {
     groups_header: HeaderName,
     groups_claim: String,
     group_scopes: BTreeMap<String, String>,
-    validator: Arc<OidcValidator>,
+    jwks: Arc<RemoteJwks>,
 }
 
 impl AuthentikAuth {
@@ -81,16 +82,7 @@ impl AuthentikAuth {
             .map_err(|e| anyhow::anyhow!("invalid username_header: {e}"))?;
         let groups_header = HeaderName::from_bytes(cfg.groups_header.as_bytes())
             .map_err(|e| anyhow::anyhow!("invalid groups_header: {e}"))?;
-
-        // `client_id` in OidcConfig is the default `aud` for `validate()`;
-        // we always use `validate_custom` with resource audiences instead.
-        let primary_aud = cfg
-            .audiences
-            .first()
-            .cloned()
-            .unwrap_or_else(|| cfg.resource.clone());
-        let oidc = OidcConfig::new(cfg.issuer.clone(), primary_aud, cfg.jwks_url);
-        let validator = OidcValidator::new(oidc);
+        let jwks = RemoteJwks::new(cfg.jwks_url)?;
 
         Ok(Self {
             issuer: cfg.issuer,
@@ -102,7 +94,7 @@ impl AuthentikAuth {
             groups_header,
             groups_claim: cfg.groups_claim,
             group_scopes: cfg.group_scopes,
-            validator: Arc::new(validator),
+            jwks: Arc::new(jwks),
         })
     }
 
@@ -169,14 +161,14 @@ impl AuthentikAuth {
         validation.validate_aud = true;
         validation.validate_exp = true;
 
-        let claims: AuthentikClaims = self
-            .validator
-            .validate_custom(token, &validation)
-            .await
-            .map_err(|e| {
-                tracing::debug!(error = %e, "authentik jwt rejected");
-                AuthReject::InvalidToken
-            })?;
+        let claims: AuthentikClaims =
+            self.jwks
+                .decode_claims(token, &validation)
+                .await
+                .map_err(|e| {
+                    tracing::debug!(error = %e, "authentik jwt rejected");
+                    AuthReject::InvalidToken
+                })?;
 
         let groups = self.extract_groups(&claims);
         let mut scope = claims.scope.unwrap_or_default();

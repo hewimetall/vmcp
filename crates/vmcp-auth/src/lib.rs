@@ -17,6 +17,7 @@ pub mod jwks;
 pub mod middleware;
 pub mod password;
 pub mod providers;
+pub mod remote_jwks;
 pub mod router;
 pub mod scopes;
 pub mod state;

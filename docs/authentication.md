@@ -24,7 +24,7 @@
 | Кто выдаёт токены | vmcp (DCR + PKCE + consent) | Authentik OAuth2/OIDC |
 | MCP-клиент | Bearer JWT или `vmcp_…` | Bearer JWT от Authentik |
 | Браузер за шлюзом | — | `X-authentik-username` + `X-authentik-groups` |
-| JWT verify | локальный JWKS | [`async-oidc-jwt-validator`](https://crates.io/crates/async-oidc-jwt-validator) + Authentik JWKS |
+| JWT verify | локальный JWKS | remote JWKS (rustls `reqwest`) + Authentik JWKS |
 | Local `/authorize`… | да | нет (только PRM → Authentik) |
 
 ### Authentik (рекомендуемая схема без DCR)

@@ -269,14 +269,8 @@ mod tests {
             AuthFacade::bearer_token(&headers).unwrap_err(),
             AuthReject::EmptyBearer
         );
-        headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_static("Token abc"),
-        );
+        headers.insert(header::AUTHORIZATION, HeaderValue::from_static("Token abc"));
         assert_eq!(AuthFacade::bearer_token(&headers).unwrap(), None);
-        assert_eq!(
-            AuthFacade::bearer_token(&HeaderMap::new()).unwrap(),
-            None
-        );
+        assert_eq!(AuthFacade::bearer_token(&HeaderMap::new()).unwrap(), None);
     }
 }

@@ -927,7 +927,9 @@ mod tests {
         )
         .await;
         assert_eq!(page.status(), StatusCode::OK);
-        let html = axum::body::to_bytes(page.into_body(), 1 << 16).await.unwrap();
+        let html = axum::body::to_bytes(page.into_body(), 1 << 16)
+            .await
+            .unwrap();
         assert!(String::from_utf8_lossy(&html).contains("vmcp consent"));
 
         // Wrong password leaves session intact.
@@ -1034,7 +1036,13 @@ mod tests {
         let master = "tok-master";
         let hash = crate::password::hash_password(master).unwrap();
         let jwks = crate::jwks::JwksManager::new_with_fresh("tok").unwrap();
-        let state = AuthState::new(jwks, "https://iss.example", "https://iss.example/mcp", 3600, hash);
+        let state = AuthState::new(
+            jwks,
+            "https://iss.example",
+            "https://iss.example/mcp",
+            3600,
+            hash,
+        );
 
         let reg = post_register(
             state.clone(),
@@ -1047,7 +1055,8 @@ mod tests {
         let reg_body = axum::body::to_bytes(reg.into_body(), 1 << 16)
             .await
             .unwrap();
-        let client_id = serde_json::from_slice::<serde_json::Value>(&reg_body).unwrap()["client_id"]
+        let client_id = serde_json::from_slice::<serde_json::Value>(&reg_body).unwrap()
+            ["client_id"]
             .as_str()
             .unwrap()
             .to_string();

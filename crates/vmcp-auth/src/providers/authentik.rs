@@ -375,10 +375,7 @@ mod tests {
         (format!("http://{addr}/jwks"), handle)
     }
 
-    fn sign_jwt(
-        mgr: &crate::jwks::JwksManager,
-        claims: serde_json::Value,
-    ) -> String {
+    fn sign_jwt(mgr: &crate::jwks::JwksManager, claims: serde_json::Value) -> String {
         use jsonwebtoken::{encode, Algorithm, Header};
         let cur = mgr.current.load();
         let mut header = Header::new(Algorithm::RS256);

@@ -422,7 +422,10 @@ mod tests {
 
         let jwks = JwksManager::new_with_fresh("gc").unwrap();
         let state = AuthState::new(jwks, "https://iss", "https://iss/mcp", 3600, "hash")
-            .with_extra_resource_audiences(vec!["https://iss/mcp".into(), "https://iss/mcp-proxy".into()]);
+            .with_extra_resource_audiences(vec![
+                "https://iss/mcp".into(),
+                "https://iss/mcp-proxy".into(),
+            ]);
         assert_eq!(state.audience_refs().len(), 2);
 
         let old = Utc::now() - chrono::Duration::hours(2);

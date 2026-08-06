@@ -3754,6 +3754,7 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "rand 0.8.7",
+ "reqwest 0.12.28",
  "rsa",
  "rusqlite",
  "serde",

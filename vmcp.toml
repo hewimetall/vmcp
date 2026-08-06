@@ -31,8 +31,11 @@ call_timeout_ms  = 60000
 
 [auth]
 # enabled = true   # set false for local dev only — disables bearer on /mcp and hides /admin
+# provider = "local"       # default: built-in OAuth AS/RS
+# provider = "authentik"   # external Authentik (JWT + forward-auth); see docs/authentication.md
 # argon2id hash of the master password — generate with `vmcp hash-password`.
 # This default is the hash of "demo-master" for local dev only. ROTATE in prod.
+# Required for provider=local; optional for authentik (only if /admin Basic needed).
 master_password_argon2 = "$argon2id$v=19$m=19456,t=2,p=1$EKXF2yiUMT1injIS9ueldA$1Pra/zoGSKVIkZq1fCg0Hd2ceJuQn1H4k2lXeKUkMD8"
 jwt_kid          = "vmcp-2026-01"
 jwks_rotate_secs = 86400
@@ -45,6 +48,20 @@ issuer           = "http://localhost:8765"
 # Durable DCR client registry (SQLite, same idea as [tasks].db_path). Survives
 # gateway restart so Cursor can reuse its stored client_id. See docs/authentication.md.
 clients_db_path  = "./state/clients.db"
+
+# /admin SPA auth (independent of MCP provider):
+# [auth.admin]
+# mode = "basic"                 # none | basic | authentik
+# required_groups = ["mcp-admins"]  # when mode = authentik
+
+# Example Authentik block (only when provider = "authentik"):
+# [auth.authentik]
+# issuer = "https://auth.example.com/application/o/mcp-internal/"
+# jwks_url = "https://auth.example.com/application/o/mcp-internal/jwks/"
+# audiences = ["https://architecture.mcpwork.space/mcp"]
+# accept_bearer = true
+# forward_auth = true
+# group_scopes = { "mcp-users" = "mcp:use", "mcp-admins" = "mcp:admin" }
 
 [recorder]
 # Live MCP session list + exchange dumps (JSON under directories).

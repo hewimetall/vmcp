@@ -59,6 +59,13 @@ pub struct AuthState {
     pub dcr_register_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
+/// Max age for ephemeral OAuth flow state (`codes` + `consents`).
+///
+/// Matches the authorization-code TTL enforced at `/token` (10 minutes).
+/// Abandoned `/authorize` → consent sessions and unused codes must be purged
+/// on this cadence or the DashMaps grow without bound (resource leak).
+pub const AUTH_EPHEMERAL_MAX_AGE: Duration = Duration::from_secs(600);
+
 /// Limits for `POST /register`. Defaults match historical open registration.
 #[derive(Debug, Clone)]
 pub struct DcrPolicy {
@@ -208,10 +215,27 @@ impl AuthState {
     }
 
     /// Purge codes and consent sessions older than `max_age`.
-    pub fn gc(&self, max_age: Duration) {
+    ///
+    /// Returns how many entries were removed (codes + consents). Call from a
+    /// background task — see `AUTH_EPHEMERAL_MAX_AGE`.
+    pub fn gc(&self, max_age: Duration) -> usize {
         let cutoff = chrono::Utc::now() - chrono::Duration::from_std(max_age).unwrap();
-        self.codes.retain(|_, v| v.issued_at > cutoff);
-        self.consents.retain(|_, v| v.created_at > cutoff);
+        let mut removed = 0usize;
+        self.codes.retain(|_, v| {
+            let keep = v.issued_at > cutoff;
+            if !keep {
+                removed += 1;
+            }
+            keep
+        });
+        self.consents.retain(|_, v| {
+            let keep = v.created_at > cutoff;
+            if !keep {
+                removed += 1;
+            }
+            keep
+        });
+        removed
     }
 
     /// Snapshot of all currently-registered OAuth dynamic clients.
@@ -392,5 +416,96 @@ mod tests {
         assert!(!locked.redirect_uri_allowed("https://evil.example/cb"));
         // Prefix-host attack must fail (G27).
         assert!(!locked.redirect_uri_allowed("http://127.0.0.1.evil.example/cb"));
+    }
+
+    #[test]
+    fn dcr_allowlist_path_port_and_unparseable_entries() {
+        let with_path = DcrPolicy {
+            enabled: true,
+            max_clients: 0,
+            redirect_uri_allowlist: vec![
+                "https://app.example/callback".into(),
+                "http://127.0.0.1:8080".into(),
+                "".into(),
+                "custom-scheme:prefix".into(),
+            ],
+        };
+        assert!(with_path.redirect_uri_allowed("https://app.example/callback"));
+        assert!(with_path.redirect_uri_allowed("https://app.example/callback/extra"));
+        assert!(!with_path.redirect_uri_allowed("https://app.example/other"));
+        assert!(with_path.redirect_uri_allowed("http://127.0.0.1:8080/x"));
+        assert!(!with_path.redirect_uri_allowed("http://127.0.0.1:9999/x"));
+        // Unparseable allow entry → literal prefix match.
+        assert!(with_path.redirect_uri_allowed("custom-scheme:prefix/more"));
+        assert!(!with_path.redirect_uri_allowed("://broken"));
+    }
+
+    #[test]
+    fn gc_and_audience_helpers() {
+        use crate::types::{AuthCodeRecord, ConsentSession};
+
+        let jwks = JwksManager::new_with_fresh("gc").unwrap();
+        let state = AuthState::new(jwks, "https://iss", "https://iss/mcp", 3600, "hash")
+            .with_extra_resource_audiences(vec![
+                "https://iss/mcp".into(),
+                "https://iss/mcp-proxy".into(),
+            ]);
+        assert_eq!(state.audience_refs().len(), 2);
+
+        let old = Utc::now() - chrono::Duration::hours(2);
+        state.codes.insert(
+            "old".into(),
+            AuthCodeRecord {
+                code: "old".into(),
+                client_id: "c".into(),
+                redirect_uri: "http://127.0.0.1/cb".into(),
+                code_challenge: "x".into(),
+                code_challenge_method: "S256".into(),
+                scope: "mcp:use".into(),
+                resource: None,
+                issued_at: old,
+            },
+        );
+        state.consents.insert(
+            "cs".into(),
+            ConsentSession {
+                id: "cs".into(),
+                client_id: "c".into(),
+                redirect_uri: "http://127.0.0.1/cb".into(),
+                state: None,
+                scope: "mcp:use".into(),
+                code_challenge: "x".into(),
+                code_challenge_method: "S256".into(),
+                resource: None,
+                created_at: old,
+            },
+        );
+        let removed = state.gc(Duration::from_secs(60));
+        assert_eq!(removed, 2);
+        assert!(state.codes.is_empty());
+        assert!(state.consents.is_empty());
+
+        // Fresh entries survive a short max_age.
+        let now = Utc::now();
+        state.codes.insert(
+            "fresh".into(),
+            AuthCodeRecord {
+                code: "fresh".into(),
+                client_id: "c".into(),
+                redirect_uri: "http://127.0.0.1/cb".into(),
+                code_challenge: "x".into(),
+                code_challenge_method: "S256".into(),
+                scope: "mcp:use".into(),
+                resource: None,
+                issued_at: now,
+            },
+        );
+        assert_eq!(state.gc(AUTH_EPHEMERAL_MAX_AGE), 0);
+        assert!(state.codes.contains_key("fresh"));
+    }
+
+    #[test]
+    fn ephemeral_max_age_matches_token_code_ttl() {
+        assert_eq!(AUTH_EPHEMERAL_MAX_AGE.as_secs(), 600);
     }
 }

@@ -21,6 +21,77 @@ use crate::state::AuthState;
 use crate::tokens::issue_access_token;
 use crate::types::*;
 
+/// Protected-resource metadata only (Authentik / external AS mode).
+///
+/// MCP clients discover Authentik via `authorization_servers`; vmcp does not
+/// mount local `/authorize`, `/token`, or DCR in this mode.
+pub fn build_external_rs_router(
+    resource: String,
+    authorization_servers: Vec<String>,
+    resource_audiences: Vec<String>,
+) -> Router {
+    let state = ExternalRsState {
+        resource: resource.clone(),
+        authorization_servers,
+        resource_audiences,
+    };
+    let mut router = Router::new().route(
+        "/.well-known/oauth-protected-resource",
+        get(external_rs_metadata),
+    );
+    for aud in &state.resource_audiences {
+        if let Ok(url) = url::Url::parse(aud) {
+            let path = url.path();
+            if path.len() > 1 {
+                let route = format!("/.well-known/oauth-protected-resource{path}");
+                router = router.route(&route, get(external_rs_metadata_scoped));
+            }
+        }
+    }
+    router.with_state(state)
+}
+
+#[derive(Clone)]
+struct ExternalRsState {
+    resource: String,
+    authorization_servers: Vec<String>,
+    resource_audiences: Vec<String>,
+}
+
+async fn external_rs_metadata(State(s): State<ExternalRsState>) -> Json<ProtectedResourceMetadata> {
+    Json(ProtectedResourceMetadata {
+        resource: s.resource.clone(),
+        authorization_servers: s.authorization_servers.clone(),
+        bearer_methods_supported: vec!["header"],
+        resource_documentation: s.authorization_servers.first().cloned(),
+    })
+}
+
+async fn external_rs_metadata_scoped(
+    State(s): State<ExternalRsState>,
+    axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
+) -> Result<Json<ProtectedResourceMetadata>, StatusCode> {
+    const PREFIX: &str = "/.well-known/oauth-protected-resource";
+    let suffix = uri.path().strip_prefix(PREFIX).unwrap_or("");
+    if suffix.is_empty() || !suffix.starts_with('/') {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let matched = s.resource_audiences.iter().find(|aud| {
+        url::Url::parse(aud)
+            .ok()
+            .is_some_and(|u| u.path() == suffix)
+    });
+    match matched {
+        Some(resource) => Ok(Json(ProtectedResourceMetadata {
+            resource: resource.clone(),
+            authorization_servers: s.authorization_servers.clone(),
+            bearer_methods_supported: vec!["header"],
+            resource_documentation: s.authorization_servers.first().cloned(),
+        })),
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
 /// Mount all OAuth-facing routes. None require authentication themselves —
 /// authentication is for the MCP endpoint, layered separately by the bin
 /// crate.
@@ -444,8 +515,10 @@ async fn token_endpoint(
         .ok_or_else(|| AuthError::BadRequest("invalid code".into()))?
         .1;
 
-    // TTL: 10 minutes.
-    if (Utc::now() - rec.issued_at).num_seconds() > 600 {
+    // TTL: same window as [`crate::state::AUTH_EPHEMERAL_MAX_AGE`] / background GC.
+    if (Utc::now() - rec.issued_at).num_seconds()
+        > crate::state::AUTH_EPHEMERAL_MAX_AGE.as_secs() as i64
+    {
         return Err(AuthError::BadRequest("expired code".into()));
     }
     if rec.client_id != client_id {
@@ -744,5 +817,477 @@ mod tests {
         )
         .await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    async fn oneshot(
+        state: AuthState,
+        req: axum::http::Request<axum::body::Body>,
+    ) -> axum::http::Response<axum::body::Body> {
+        use tower::ServiceExt;
+        build_router(state).oneshot(req).await.unwrap()
+    }
+
+    fn pkce_pair() -> (String, String) {
+        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk".to_string();
+        let challenge = pkce_s256(&verifier);
+        (verifier, challenge)
+    }
+
+    #[tokio::test]
+    async fn oauth_metadata_jwks_and_full_code_flow() {
+        use axum::body::Body;
+
+        let master = "oauth-master-secret";
+        let hash = crate::password::hash_password(master).unwrap();
+        let jwks = crate::jwks::JwksManager::new_with_fresh("oauth-flow").unwrap();
+        let state = AuthState::new(
+            jwks,
+            "https://iss.example",
+            "https://iss.example/mcp",
+            3600,
+            hash,
+        )
+        .with_extra_resource_audiences(vec!["https://iss.example/mcp-proxy".into()]);
+
+        // Well-known + JWKS.
+        for uri in [
+            "/.well-known/oauth-authorization-server",
+            "/.well-known/oauth-protected-resource",
+            "/.well-known/oauth-protected-resource/mcp",
+            "/.well-known/oauth-protected-resource/mcp-proxy",
+            "/.well-known/jwks.json",
+        ] {
+            let resp = oneshot(
+                state.clone(),
+                axum::http::Request::builder()
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(resp.status(), StatusCode::OK, "GET {uri}");
+        }
+        let miss = oneshot(
+            state.clone(),
+            axum::http::Request::builder()
+                .uri("/.well-known/oauth-protected-resource/unknown")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(miss.status(), StatusCode::NOT_FOUND);
+
+        // DCR register.
+        let reg = post_register(
+            state.clone(),
+            serde_json::json!({
+                "client_name": "Flow Client!!",
+                "redirect_uris": ["http://127.0.0.1/cb?x=1"],
+                "grant_types": ["authorization_code"],
+                "response_types": ["code"]
+            }),
+        )
+        .await;
+        assert_eq!(reg.status(), StatusCode::OK);
+        let reg_body = axum::body::to_bytes(reg.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        let reg_v: serde_json::Value = serde_json::from_slice(&reg_body).unwrap();
+        let client_id = reg_v["client_id"].as_str().unwrap().to_string();
+
+        let (verifier, challenge) = pkce_pair();
+        let auth_uri = format!(
+            "/authorize?client_id={client_id}&redirect_uri={}&response_type=code&code_challenge={challenge}&code_challenge_method=S256&state=xyz&scope=mcp:use&resource=https://iss.example/mcp",
+            urlencoding_path("http://127.0.0.1/cb?x=1")
+        );
+        let auth_resp = oneshot(
+            state.clone(),
+            axum::http::Request::builder()
+                .uri(&auth_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(auth_resp.status(), StatusCode::SEE_OTHER);
+        let loc = auth_resp
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(loc.contains("/consent?cs="));
+        let cs = loc.split("cs=").nth(1).unwrap().to_string();
+
+        // Consent page HTML.
+        let page = oneshot(
+            state.clone(),
+            axum::http::Request::builder()
+                .uri(format!("/consent?cs={cs}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(page.status(), StatusCode::OK);
+        let html = axum::body::to_bytes(page.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&html).contains("vmcp consent"));
+
+        // Wrong password leaves session intact.
+        let bad = oneshot(
+            state.clone(),
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/consent")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!("cs={cs}&password=wrong")))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(bad.status(), StatusCode::FORBIDDEN);
+
+        // Grant.
+        let grant = oneshot(
+            state.clone(),
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/consent")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!("cs={cs}&password={master}")))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(grant.status(), StatusCode::SEE_OTHER);
+        let cb = grant
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(cb.contains("code="));
+        assert!(cb.contains("state=xyz"));
+        let code = cb
+            .split("code=")
+            .nth(1)
+            .unwrap()
+            .split('&')
+            .next()
+            .unwrap()
+            .to_string();
+
+        let token_body = format!(
+            "grant_type=authorization_code&code={code}&code_verifier={verifier}&client_id={client_id}&redirect_uri={}&resource=https://iss.example/mcp",
+            urlencoding_path("http://127.0.0.1/cb?x=1")
+        );
+        let token_resp = oneshot(
+            state.clone(),
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/token")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(token_body))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(token_resp.status(), StatusCode::OK);
+        let tb = axum::body::to_bytes(token_resp.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        let tv: serde_json::Value = serde_json::from_slice(&tb).unwrap();
+        assert_eq!(tv["token_type"], "Bearer");
+        assert!(tv["access_token"].as_str().unwrap().len() > 20);
+
+        // Authorize rejects bad response_type / unknown client.
+        let bad_rt = oneshot(
+            state.clone(),
+            axum::http::Request::builder()
+                .uri(format!(
+                    "/authorize?client_id={client_id}&redirect_uri={}&response_type=token&code_challenge={challenge}&code_challenge_method=S256",
+                    urlencoding_path("http://127.0.0.1/cb?x=1")
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(bad_rt.status(), StatusCode::BAD_REQUEST);
+
+        let unk = oneshot(
+            state,
+            axum::http::Request::builder()
+                .uri(format!(
+                    "/authorize?client_id=nope&redirect_uri={}&response_type=code&code_challenge={challenge}&code_challenge_method=S256",
+                    urlencoding_path("http://127.0.0.1/cb?x=1")
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(unk.status(), StatusCode::BAD_REQUEST);
+    }
+
+    fn urlencoding_path(s: &str) -> String {
+        utf8_percent_encode(s, NON_ALPHANUMERIC).to_string()
+    }
+
+    #[tokio::test]
+    async fn token_endpoint_rejects_bad_grant_and_pkce() {
+        use axum::body::Body;
+
+        let master = "tok-master";
+        let hash = crate::password::hash_password(master).unwrap();
+        let jwks = crate::jwks::JwksManager::new_with_fresh("tok").unwrap();
+        let state = AuthState::new(
+            jwks,
+            "https://iss.example",
+            "https://iss.example/mcp",
+            3600,
+            hash,
+        );
+
+        let reg = post_register(
+            state.clone(),
+            serde_json::json!({
+                "client_name": "t",
+                "redirect_uris": ["http://127.0.0.1/cb"]
+            }),
+        )
+        .await;
+        let reg_body = axum::body::to_bytes(reg.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        let client_id = serde_json::from_slice::<serde_json::Value>(&reg_body).unwrap()
+            ["client_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let (verifier, challenge) = pkce_pair();
+
+        let auth = oneshot(
+            state.clone(),
+            axum::http::Request::builder()
+                .uri(format!(
+                    "/authorize?client_id={client_id}&redirect_uri=http%3A%2F%2F127.0.0.1%2Fcb&response_type=code&code_challenge={challenge}&code_challenge_method=S256"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        let cs = auth
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split("cs=")
+            .nth(1)
+            .unwrap()
+            .to_string();
+        let grant = oneshot(
+            state.clone(),
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/consent")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!("cs={cs}&password={master}")))
+                .unwrap(),
+        )
+        .await;
+        let code = grant
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split("code=")
+            .nth(1)
+            .unwrap()
+            .split('&')
+            .next()
+            .unwrap()
+            .to_string();
+
+        let bad_grant = oneshot(
+            state.clone(),
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/token")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("grant_type=client_credentials"))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(bad_grant.status(), StatusCode::BAD_REQUEST);
+
+        let bad_pkce = oneshot(
+            state.clone(),
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/token")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "grant_type=authorization_code&code={code}&code_verifier=wrong-verifier-value-xx&client_id={client_id}&redirect_uri=http://127.0.0.1/cb"
+                )))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(bad_pkce.status(), StatusCode::BAD_REQUEST);
+
+        // Re-mint a fresh code for success with bare-origin resource.
+        let auth2 = oneshot(
+            state.clone(),
+            axum::http::Request::builder()
+                .uri(format!(
+                    "/authorize?client_id={client_id}&redirect_uri=http%3A%2F%2F127.0.0.1%2Fcb&response_type=code&code_challenge={challenge}&code_challenge_method=S256"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        let cs2 = auth2
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split("cs=")
+            .nth(1)
+            .unwrap()
+            .to_string();
+        let grant2 = oneshot(
+            state.clone(),
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/consent")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!("cs={cs2}&password={master}")))
+                .unwrap(),
+        )
+        .await;
+        let code2 = grant2
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split("code=")
+            .nth(1)
+            .unwrap()
+            .split('&')
+            .next()
+            .unwrap()
+            .to_string();
+        let ok = oneshot(
+            state,
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/token")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "grant_type=authorization_code&code={code2}&code_verifier={verifier}&client_id={client_id}&redirect_uri=http://127.0.0.1/cb&resource=https://iss.example"
+                )))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(ok.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn external_rs_router_serves_prm_and_scoped_paths() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+
+        let app = build_external_rs_router(
+            "https://mcp.example/mcp".into(),
+            vec!["https://auth.example/application/o/mcp/".into()],
+            vec![
+                "https://mcp.example/mcp".into(),
+                "https://mcp.example/mcp-proxy".into(),
+            ],
+        );
+
+        let bare = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/.well-known/oauth-protected-resource")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bare.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(bare.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["resource"], "https://mcp.example/mcp");
+        assert_eq!(
+            v["authorization_servers"][0],
+            "https://auth.example/application/o/mcp/"
+        );
+
+        for path in ["/mcp", "/mcp-proxy"] {
+            let resp = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(format!("/.well-known/oauth-protected-resource{path}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "path {path}");
+            let b = axum::body::to_bytes(resp.into_body(), 1 << 16)
+                .await
+                .unwrap();
+            let j: serde_json::Value = serde_json::from_slice(&b).unwrap();
+            assert_eq!(j["resource"], format!("https://mcp.example{path}"));
+        }
+
+        let miss = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/.well-known/oauth-protected-resource/nope")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(miss.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn dcr_empty_redirect_uris_rejected_and_persist_path() {
+        use crate::client_store::ClientStore;
+        use std::sync::Arc;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let db = dir.path().join("clients.db");
+        let store = Arc::new(ClientStore::open(&db).unwrap());
+        let state = test_auth_state().with_client_store(store).unwrap();
+
+        let empty = post_register(
+            state.clone(),
+            serde_json::json!({
+                "client_name": "x",
+                "redirect_uris": []
+            }),
+        )
+        .await;
+        assert_eq!(empty.status(), StatusCode::BAD_REQUEST);
+
+        let ok = post_register(
+            state,
+            serde_json::json!({
+                "client_name": "persisted",
+                "redirect_uris": ["http://127.0.0.1/cb"]
+            }),
+        )
+        .await;
+        assert_eq!(ok.status(), StatusCode::OK);
     }
 }

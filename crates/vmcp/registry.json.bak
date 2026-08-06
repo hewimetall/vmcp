@@ -1,0 +1,11 @@
+{
+  "upstreams": [
+    {
+      "name": "context7",
+      "description": "docs",
+      "transport": "http",
+      "url": "https://mcp.context7.com/mcp",
+      "bearer": "${CTX_KEY}"
+    }
+  ]
+}

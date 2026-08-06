@@ -97,20 +97,15 @@ pub enum McpCommand {
     /// List upstreams in registry.json.
     List,
     /// Show one upstream as JSON.
-    Get {
-        name: String,
-    },
+    Get { name: String },
     /// Remove an upstream by name.
-    Remove {
-        name: String,
-    },
+    Remove { name: String },
 }
 
 /// Scaffold `vmcp.toml`, empty `registry.json`, and standard dirs.
 pub fn run_init(dir: Option<&Path>, force: bool) -> Result<()> {
     let root = dir.unwrap_or_else(|| Path::new(".")).to_path_buf();
-    fs::create_dir_all(&root)
-        .with_context(|| format!("create directory {}", root.display()))?;
+    fs::create_dir_all(&root).with_context(|| format!("create directory {}", root.display()))?;
 
     let toml_path = root.join("vmcp.toml");
     let reg_path = root.join("registry.json");
@@ -125,10 +120,13 @@ pub fn run_init(dir: Option<&Path>, force: bool) -> Result<()> {
     eprintln!("initialized vmcp project in {}", root.display());
     eprintln!("  {}  (auth.enabled = false)", toml_path.display());
     eprintln!("  {}", reg_path.display());
-    eprintln!("next:");
+    eprintln!("next (run from the project directory — paths in vmcp.toml are CWD-relative):");
+    if root != Path::new(".") {
+        eprintln!("  cd {}", root.display());
+    }
     eprintln!("  vmcp mcp add --transport http context7 https://mcp.context7.com/mcp");
     eprintln!("  vmcp mcp add --transport stdio time -- uvx mcp-server-time");
-    eprintln!("  vmcp --config {}/vmcp.toml serve", root.display());
+    eprintln!("  vmcp serve");
     Ok(())
 }
 
@@ -239,7 +237,11 @@ fn mcp_add(
     let mut reg = load_registry_raw(path).with_context(|| format!("load {}", path.display()))?;
     add_upstream(&mut reg, spec).with_context(|| format!("add upstream `{name}`"))?;
     save_registry_atomic(path, &reg).with_context(|| format!("write {}", path.display()))?;
-    eprintln!("Added {} MCP server `{name}` -> {}", transport_label(transport), path.display());
+    eprintln!(
+        "Added {} MCP server `{name}` -> {}",
+        transport_label(transport),
+        path.display()
+    );
     Ok(())
 }
 
@@ -253,9 +255,9 @@ fn transport_label(t: CliTransport) -> &'static str {
 fn parse_env_pairs(pairs: &[String]) -> Result<BTreeMap<String, String>> {
     let mut out = BTreeMap::new();
     for p in pairs {
-        let (k, v) = p.split_once('=').with_context(|| {
-            format!("--env expects KEY=VALUE, got `{p}`")
-        })?;
+        let (k, v) = p
+            .split_once('=')
+            .with_context(|| format!("--env expects KEY=VALUE, got `{p}`"))?;
         if k.is_empty() {
             bail!("--env key must be non-empty (`{p}`)");
         }
@@ -301,8 +303,7 @@ fn mcp_get(path: &Path, name: &str) -> Result<()> {
 
 fn mcp_remove(path: &Path, name: &str) -> Result<()> {
     let mut reg = load_registry_raw(path).with_context(|| format!("load {}", path.display()))?;
-    remove_upstream(&mut reg, name)
-        .with_context(|| format!("remove upstream `{name}`"))?;
+    remove_upstream(&mut reg, name).with_context(|| format!("remove upstream `{name}`"))?;
     save_registry_atomic(path, &reg).with_context(|| format!("write {}", path.display()))?;
     eprintln!("Removed MCP server `{name}` from {}", path.display());
     Ok(())
@@ -330,9 +331,12 @@ mod tests {
         assert!(dir.join("vmcp.toml").exists());
         assert!(dir.join("registry.json").exists());
 
-        let cfg = dir.join("vmcp.toml");
+        // Paths in the scaffolded toml are CWD-relative (same as demo/).
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&dir).unwrap();
+
         run_mcp(
-            Some(&cfg),
+            None,
             McpCommand::Add {
                 transport: CliTransport::Http,
                 env: vec![],
@@ -345,7 +349,7 @@ mod tests {
         )
         .unwrap();
         run_mcp(
-            Some(&cfg),
+            None,
             McpCommand::Add {
                 transport: CliTransport::Stdio,
                 env: vec!["TZ=UTC".into()],
@@ -358,26 +362,27 @@ mod tests {
         )
         .unwrap();
 
-        let reg = load_registry_raw(&dir.join("registry.json")).unwrap();
+        let reg = load_registry_raw(Path::new("registry.json")).unwrap();
         assert_eq!(reg.upstreams.len(), 2);
-        assert_eq!(
-            reg.upstreams[0].bearer.as_deref(),
-            Some("${CTX_KEY}")
-        );
+        assert_eq!(reg.upstreams[0].bearer.as_deref(), Some("${CTX_KEY}"));
         assert_eq!(reg.upstreams[1].command, "uvx");
-        assert_eq!(reg.upstreams[1].env.get("TZ").map(String::as_str), Some("UTC"));
+        assert_eq!(
+            reg.upstreams[1].env.get("TZ").map(String::as_str),
+            Some("UTC")
+        );
 
         run_mcp(
-            Some(&cfg),
+            None,
             McpCommand::Remove {
                 name: "context7".into(),
             },
         )
         .unwrap();
-        let reg = load_registry_raw(&dir.join("registry.json")).unwrap();
+        let reg = load_registry_raw(Path::new("registry.json")).unwrap();
         assert_eq!(reg.upstreams.len(), 1);
         assert_eq!(reg.upstreams[0].name, "time");
 
+        std::env::set_current_dir(&prev).unwrap();
         let _ = fs::remove_dir_all(&dir);
     }
 

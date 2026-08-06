@@ -100,11 +100,7 @@ impl UpstreamTransport {
 
 impl UpstreamSpec {
     /// Build a stdio upstream (`command` + `args`).
-    pub fn stdio(
-        name: impl Into<String>,
-        command: impl Into<String>,
-        args: Vec<String>,
-    ) -> Self {
+    pub fn stdio(name: impl Into<String>, command: impl Into<String>, args: Vec<String>) -> Self {
         Self {
             name: name.into(),
             description: None,

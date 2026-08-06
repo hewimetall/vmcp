@@ -733,7 +733,10 @@ fn flow_tool_upsert_and_missing_errors() {
         .unwrap();
     let t = sc.tools.iter().find(|t| t.name == "do_work").unwrap();
     assert!(!t.read_only);
-    assert_eq!(t.task_support, Some(vmcp_registry::TaskSupportHint::Required));
+    assert_eq!(
+        t.task_support,
+        Some(vmcp_registry::TaskSupportHint::Required)
+    );
     assert_eq!(t.description.as_deref(), Some("first"));
 
     // Upsert flips to read_only + forbidden + new description
@@ -912,11 +915,7 @@ fn flow_skill_validation_errors() {
     );
 
     let src = dir.join("mismatch.yaml");
-    fs::write(
-        &src,
-        "name: other\ndescription: x\ntemplate: hi\n",
-    )
-    .unwrap();
+    fs::write(&src, "name: other\ndescription: x\ntemplate: hi\n").unwrap();
     assert_err(
         &run(
             &cfg,
@@ -959,7 +958,10 @@ fn flow_skill_validation_errors() {
         "skill anon file",
     );
     let yaml = fs::read_to_string(dir.join("skills/anon.yaml")).unwrap();
-    assert!(yaml.contains("name: anon") || yaml.contains("name: \"anon\""), "{yaml}");
+    assert!(
+        yaml.contains("name: anon") || yaml.contains("name: \"anon\""),
+        "{yaml}"
+    );
     assert!(yaml.contains("from-cli"), "{yaml}");
     assert!(yaml.contains("body"), "{yaml}");
 
@@ -1092,7 +1094,10 @@ fn flow_list_disabled_and_get_shows_sidecar() {
     let g = String::from_utf8_lossy(&get.stdout);
     assert!(g.contains("sidecar_spec"), "{g}");
     assert!(g.contains("mock.json"), "{g}");
-    assert!(g.contains("\"enabled\": false") || g.contains("\"enabled\":false"), "{g}");
+    assert!(
+        g.contains("\"enabled\": false") || g.contains("\"enabled\":false"),
+        "{g}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

@@ -32,6 +32,7 @@ opentelemetry = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 toml = { workspace = true }
 arc-swap = { workspace = true }
 # HTTP gateway stack (always on — local stdio ingress lives in vmcp-lite).

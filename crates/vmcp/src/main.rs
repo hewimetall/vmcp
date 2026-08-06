@@ -3,8 +3,8 @@
 //! HTTP ingress (`serve`): Axum + StreamableHttpService at `/mcp`, OAuth
 //! bearer, optional admin UI and transparent proxy.
 //!
-//! Operator CLI: `init` scaffolds a project; `mcp add|list|get|remove` edits
-//! `registry.json` (Claude-style syntax).
+//! Operator CLI: `init`, then `add|list|get|remove` for `mcp` / `tool` /
+//! `skill` / `tasks`. Legacy `mcp …` aliases the mcp target.
 //!
 //! Local stdio MCP hosts use [`vmcp-lite`](https://github.com/hewimetall/vmcp-lite)
 //! (`uvx vmcp-lite-mcp`) instead.
@@ -29,7 +29,7 @@ use tracing_subscriber::EnvFilter;
 use vmcp_auth::{password, static_tokens};
 
 use boot::BootContext;
-use cli::McpCommand;
+use cli::{AddCommand, GetCommand, ListCommand, McpCommand, RemoveCommand};
 
 #[derive(Parser, Debug)]
 #[command(name = "vmcp", version, about = "Virtual MCP gateway")]
@@ -55,7 +55,27 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// Manage upstream MCP servers in registry.json (Claude-style).
+    /// Add mcp / tool sidecar / skill / enable tasks.
+    Add {
+        #[command(subcommand)]
+        command: AddCommand,
+    },
+    /// List mcp upstreams, tool sidecars, or skills.
+    List {
+        #[command(subcommand)]
+        command: ListCommand,
+    },
+    /// Show one mcp / tool / skill as JSON or YAML.
+    Get {
+        #[command(subcommand)]
+        command: GetCommand,
+    },
+    /// Remove mcp / tool sidecar entry / skill.
+    Remove {
+        #[command(subcommand)]
+        command: RemoveCommand,
+    },
+    /// Alias for mcp target (`vmcp mcp add` ≡ `vmcp add mcp`).
     Mcp {
         #[command(subcommand)]
         command: McpCommand,
@@ -104,6 +124,18 @@ async fn main() -> Result<()> {
     match command {
         Command::Init { dir, force } => {
             return cli::run_init(dir.as_deref(), force);
+        }
+        Command::Add { command } => {
+            return cli::run_add(cli.config.as_deref(), command);
+        }
+        Command::List { command } => {
+            return cli::run_list(cli.config.as_deref(), command);
+        }
+        Command::Get { command } => {
+            return cli::run_get(cli.config.as_deref(), command);
+        }
+        Command::Remove { command } => {
+            return cli::run_remove(cli.config.as_deref(), command);
         }
         Command::Mcp { command } => {
             return cli::run_mcp(cli.config.as_deref(), command);

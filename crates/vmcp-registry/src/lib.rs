@@ -146,12 +146,12 @@ pub struct SidecarTool {
     #[serde(default)]
     pub read_only: bool,
     /// Optional override description (rarely needed).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Override for upstream `execution.taskSupport`. When set, controls whether
     /// the tool appears on vmcp's `run_task` allowlist (`optional`/`required`).
     /// `forbidden` (or omitting with upstream also forbidden) keeps it GraphQL-only.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_support: Option<TaskSupportHint>,
 }
 
@@ -495,6 +495,52 @@ pub fn load_sidecar(path: Option<&Path>) -> Result<Option<SidecarSpec>, Registry
         }
         _ => Ok(None),
     }
+}
+
+/// Atomic write of a sidecar JSON (`specs/<server>.json`).
+pub fn save_sidecar_atomic(path: &Path, spec: &SidecarSpec) -> Result<(), RegistryError> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let tmp = path.with_extension("json.tmp");
+    let bak = path.with_extension("json.bak");
+    let text = serde_json::to_string_pretty(spec)?;
+    fs::write(&tmp, format!("{text}\n"))?;
+    if path.exists() {
+        let _ = fs::rename(path, &bak);
+    }
+    fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// Insert or replace a tool override in a sidecar (by tool name).
+pub fn upsert_sidecar_tool(spec: &mut SidecarSpec, tool: SidecarTool) {
+    if let Some(existing) = spec.tools.iter_mut().find(|t| t.name == tool.name) {
+        *existing = tool;
+    } else {
+        spec.tools.push(tool);
+    }
+    spec.tools.sort_by(|a, b| a.name.cmp(&b.name));
+}
+
+/// Remove a tool override by name. Returns the removed entry.
+pub fn remove_sidecar_tool(
+    spec: &mut SidecarSpec,
+    tool_name: &str,
+) -> Result<SidecarTool, RegistryError> {
+    let idx = spec
+        .tools
+        .iter()
+        .position(|t| t.name == tool_name)
+        .ok_or_else(|| RegistryError::UnknownName(format!("tool `{tool_name}`")))?;
+    Ok(spec.tools.remove(idx))
+}
+
+/// Default on-disk name for a server's sidecar under `spec_dir`.
+pub fn sidecar_filename(server: &str) -> String {
+    format!("{server}.json")
 }
 
 /// Shape-only drift check: do the tool names + JSON schemas + read_only +

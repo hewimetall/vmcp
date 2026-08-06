@@ -38,20 +38,23 @@ Env: `VMCP_REGISTRY_PATH`, `VMCP_SPEC_DIR`, `VMCP_LOCK_PATH`, `VMCP_SKILLS_DIR`,
 
 ## 1. Upstream-сервисы (`registry.json`)
 
-Правится вручную или через CLI (как у Claude Code):
+Правится вручную или через CLI:
 
 ```bash
-vmcp init                                 # vmcp.toml + пустой registry.json + dirs
-vmcp mcp add --transport http notion https://mcp.notion.com/mcp
-vmcp mcp add --transport http secure https://api.example.com/mcp --bearer '${API_KEY}'
-vmcp mcp add --transport stdio time -- uvx mcp-server-time
-vmcp mcp add --env KEY=val --transport stdio airtable -- npx -y airtable-mcp-server
-vmcp mcp list
-vmcp mcp get time
-vmcp mcp remove time
+vmcp init                                      # vmcp.toml + пустой registry.json + dirs
+vmcp add mcp --transport http notion https://mcp.notion.com/mcp
+vmcp add mcp --bearer '${API_KEY}' --transport http secure https://api.example.com/mcp
+vmcp add mcp --transport stdio time -- uvx mcp-server-time
+vmcp add tool time get_current_time --read-only
+vmcp add tool presentation build_presentation --task-support optional
+vmcp add skill search_docs --description 'docs' --template 'Call query_graphql…'
+vmcp add tasks                                 # [tasks] enabled = true в vmcp.toml
+vmcp list mcp|tool|skill
+vmcp get mcp time
+vmcp remove tool presentation build_presentation
 ```
 
-Опции (`--transport`, `--env`, `--bearer`, …) — **до** имени сервера; для stdio команда и args — после `--`. Путь к registry берётся из `--config` / `VMCP_CONFIG` (`registry_path`). `${ENV}` в URL/bearer не раскрываются при записи CLI.
+`vmcp mcp add …` — алиас на `vmcp add mcp …`. Опции (`--transport`, `--env`, `--bearer`, …) — **до** имени сервера; для stdio команда и args — после `--`. Пути из `--config` / `VMCP_CONFIG`. `${ENV}` в URL/bearer не раскрываются при записи CLI. Sidecar tools пишутся в `spec_dir/<server>.json` и линкуются в `sidecar_spec`.
 
 Нет файла → пустой пул (шлюз стартует). Единственный ключ списка — **`upstreams`** (legacy `servers` в 1.0 = ошибка парсинга).
 

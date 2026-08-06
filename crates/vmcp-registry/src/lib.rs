@@ -50,42 +50,92 @@ pub struct UpstreamSpec {
     /// Operator-authored description shown via `Query.servers.description`.
     /// Lets agents pick the right upstream by purpose before reaching for
     /// `search(q)` — e.g. "WORK for JIRA — read & write issues".
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// How to reach this upstream. Defaults to `stdio`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "UpstreamTransport::is_stdio")]
     pub transport: UpstreamTransport,
     /// Streamable-HTTP endpoint URL (required when `transport = "http"`),
     /// e.g. `http://127.0.0.1:8080/mcp`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     /// Bearer token sent as `Authorization: Bearer <token>` to an HTTP
     /// upstream. The raw token only — vmcp/rmcp adds the `Bearer ` prefix.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bearer: Option<String>,
     /// Executable to spawn (stdio transport). Ignored for HTTP upstreams.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub command: String,
     /// Arguments passed to `command`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
     /// Environment variables for the child process.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
     /// Working directory for the child process. None = inherit.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
     /// Path to a sidecar JSON with `readOnlyHint` overrides for tools whose
     /// upstream annotation is missing or wrong.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidecar_spec: Option<PathBuf>,
     /// Whether to spawn this upstream. Disabled entries are skipped.
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub enabled: bool,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn is_true(v: &bool) -> bool {
+    *v
+}
+
+impl UpstreamTransport {
+    fn is_stdio(&self) -> bool {
+        matches!(self, Self::Stdio)
+    }
+}
+
+impl UpstreamSpec {
+    /// Build a stdio upstream (`command` + `args`).
+    pub fn stdio(
+        name: impl Into<String>,
+        command: impl Into<String>,
+        args: Vec<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            description: None,
+            transport: UpstreamTransport::Stdio,
+            url: None,
+            bearer: None,
+            command: command.into(),
+            args,
+            env: BTreeMap::new(),
+            cwd: None,
+            sidecar_spec: None,
+            enabled: true,
+        }
+    }
+
+    /// Build an HTTP upstream (`url`, optional bearer).
+    pub fn http(name: impl Into<String>, url: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: None,
+            transport: UpstreamTransport::Http,
+            url: Some(url.into()),
+            bearer: None,
+            command: String::new(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            cwd: None,
+            sidecar_spec: None,
+            enabled: true,
+        }
+    }
 }
 
 /// Optional per-tool sidecar override file: `specs/<server>.json`.
@@ -194,6 +244,29 @@ pub enum RegistryError {
     Env(String),
     #[error("duplicate upstream name: {0}")]
     DuplicateName(String),
+    #[error("unknown upstream name: {0}")]
+    UnknownName(String),
+    #[error("invalid upstream name: {0}")]
+    InvalidName(String),
+}
+
+/// Validate an upstream `name`: non-empty, ≤64 chars, `[A-Za-z0-9_-]+`.
+/// Same charset as `upstream:<name>` scope tokens.
+pub fn validate_upstream_name(name: &str) -> Result<(), RegistryError> {
+    if name.is_empty() || name.len() > 64 {
+        return Err(RegistryError::InvalidName(
+            "must be 1..=64 characters".into(),
+        ));
+    }
+    if !name
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err(RegistryError::InvalidName(
+            "use only A-Za-z0-9_- (GraphQL / scope identifier)".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Expand `${VAR}` / `$VAR` placeholders from the process environment.
@@ -290,13 +363,12 @@ fn reject_duplicate_names(registry: &Registry) -> Result<(), RegistryError> {
     Ok(())
 }
 
-/// Load the registry JSON. Returns an empty registry if the file is absent —
-/// vmcp can boot with no upstreams (useful for OAuth-only deploys).
+/// Load registry JSON from disk **without** expanding `${ENV}` placeholders.
+/// Use this for CLI edit/list so secrets stay as `${VAR}` on round-trip.
 ///
-/// After parse, expands `${ENV}` placeholders in each upstream's `url`,
-/// `bearer`, and `env` values. Duplicate `name`s are rejected. Missing env
-/// vars in placeholders are a hard error.
-pub fn load_registry(path: &Path) -> Result<Registry, RegistryError> {
+/// Returns an empty registry if the file is absent. Duplicate `name`s are
+/// rejected.
+pub fn load_registry_raw(path: &Path) -> Result<Registry, RegistryError> {
     if !path.exists() {
         tracing::warn!(
             ?path,
@@ -305,12 +377,90 @@ pub fn load_registry(path: &Path) -> Result<Registry, RegistryError> {
         return Ok(Registry::default());
     }
     let text = fs::read_to_string(path)?;
-    let mut registry: Registry = serde_json::from_str(&text)?;
+    let registry: Registry = serde_json::from_str(&text)?;
     reject_duplicate_names(&registry)?;
+    Ok(registry)
+}
+
+/// Load the registry JSON. Returns an empty registry if the file is absent —
+/// vmcp can boot with no upstreams (useful for OAuth-only deploys).
+///
+/// After parse, expands `${ENV}` placeholders in each upstream's `url`,
+/// `bearer`, and `env` values. Duplicate `name`s are rejected. Missing env
+/// vars in placeholders are a hard error.
+pub fn load_registry(path: &Path) -> Result<Registry, RegistryError> {
+    let mut registry = load_registry_raw(path)?;
     for upstream in &mut registry.upstreams {
         expand_upstream(upstream)?;
     }
     Ok(registry)
+}
+
+/// Atomic write of `registry.json`: `<path>.tmp` → backup → rename.
+/// Does **not** expand env — writes the in-memory specs as-is (CLI round-trip).
+pub fn save_registry_atomic(path: &Path, registry: &Registry) -> Result<(), RegistryError> {
+    reject_duplicate_names(registry)?;
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let tmp = path.with_extension("json.tmp");
+    let bak = path.with_extension("json.bak");
+    let text = serde_json::to_string_pretty(registry)?;
+    fs::write(&tmp, format!("{text}\n"))?;
+    if path.exists() {
+        let _ = fs::rename(path, &bak);
+    }
+    fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// Append an upstream. Errors on invalid / duplicate name or cap overflow.
+pub fn add_upstream(registry: &mut Registry, spec: UpstreamSpec) -> Result<(), RegistryError> {
+    validate_upstream_name(&spec.name)?;
+    if registry.upstreams.iter().any(|u| u.name == spec.name) {
+        return Err(RegistryError::DuplicateName(spec.name));
+    }
+    if registry.upstreams.len() >= MAX_UPSTREAMS {
+        return Err(RegistryError::Env(format!(
+            "too many upstreams ({}); max is {MAX_UPSTREAMS}",
+            registry.upstreams.len()
+        )));
+    }
+    match spec.transport {
+        UpstreamTransport::Http => {
+            if spec.url.as_deref().unwrap_or("").is_empty() {
+                return Err(RegistryError::Env(
+                    "http upstream requires a non-empty url".into(),
+                ));
+            }
+        }
+        UpstreamTransport::Stdio => {
+            if spec.command.is_empty() {
+                return Err(RegistryError::Env(
+                    "stdio upstream requires a command".into(),
+                ));
+            }
+        }
+    }
+    registry.upstreams.push(spec);
+    Ok(())
+}
+
+/// Remove an upstream by name. Errors if missing.
+pub fn remove_upstream(registry: &mut Registry, name: &str) -> Result<UpstreamSpec, RegistryError> {
+    let idx = registry
+        .upstreams
+        .iter()
+        .position(|u| u.name == name)
+        .ok_or_else(|| RegistryError::UnknownName(name.to_string()))?;
+    Ok(registry.upstreams.remove(idx))
+}
+
+/// Look up an upstream by name.
+pub fn get_upstream<'a>(registry: &'a Registry, name: &str) -> Option<&'a UpstreamSpec> {
+    registry.upstreams.iter().find(|u| u.name == name)
 }
 
 /// Load the lock file. Returns None if absent (first boot).
@@ -715,5 +865,54 @@ mod tests {
             task_support: TaskSupportHint::Optional,
         }];
         assert!(detect_drift(&stored, &live));
+    }
+
+    #[test]
+    fn validate_upstream_name_charset() {
+        assert!(validate_upstream_name("time").is_ok());
+        assert!(validate_upstream_name("architect_c4").is_ok());
+        assert!(validate_upstream_name("my-server").is_ok());
+        assert!(validate_upstream_name("").is_err());
+        assert!(validate_upstream_name("has space").is_err());
+        assert!(validate_upstream_name("bad.name").is_err());
+    }
+
+    #[test]
+    fn add_remove_upstream_round_trip_preserves_env_placeholders() {
+        let path = tmp_path("reg-cli");
+        let mut reg = Registry::default();
+        let mut spec = UpstreamSpec::http("ctx", "https://mcp.example.com/${API_KEY}/mcp");
+        spec.bearer = Some("${API_KEY}".into());
+        add_upstream(&mut reg, spec).unwrap();
+        save_registry_atomic(&path, &reg).unwrap();
+
+        let loaded = load_registry_raw(&path).unwrap();
+        assert_eq!(
+            loaded.upstreams[0].url.as_deref(),
+            Some("https://mcp.example.com/${API_KEY}/mcp")
+        );
+        assert_eq!(loaded.upstreams[0].bearer.as_deref(), Some("${API_KEY}"));
+
+        remove_upstream(&mut reg, "ctx").unwrap();
+        assert!(get_upstream(&reg, "ctx").is_none());
+        assert!(matches!(
+            add_upstream(&mut reg, UpstreamSpec::http("ctx", "http://x")),
+            Ok(())
+        ));
+        assert!(matches!(
+            add_upstream(&mut reg, UpstreamSpec::http("ctx", "http://y")),
+            Err(RegistryError::DuplicateName(_))
+        ));
+        cleanup(&[path]);
+    }
+
+    #[test]
+    fn serialize_skips_stdio_defaults() {
+        let spec = UpstreamSpec::stdio("time", "uvx", vec!["mcp-server-time".into()]);
+        let v = serde_json::to_value(&spec).unwrap();
+        assert!(v.get("transport").is_none());
+        assert!(v.get("enabled").is_none());
+        assert!(v.get("url").is_none());
+        assert_eq!(v["command"], "uvx");
     }
 }

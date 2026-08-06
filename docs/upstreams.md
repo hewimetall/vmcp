@@ -38,7 +38,22 @@ Env: `VMCP_REGISTRY_PATH`, `VMCP_SPEC_DIR`, `VMCP_LOCK_PATH`, `VMCP_SKILLS_DIR`,
 
 ## 1. Upstream-сервисы (`registry.json`)
 
-Правится вручную. Нет файла → пустой пул (шлюз стартует). Единственный ключ списка — **`upstreams`** (legacy `servers` в 1.0 = ошибка парсинга).
+Правится вручную или через CLI (как у Claude Code):
+
+```bash
+vmcp init                                 # vmcp.toml + пустой registry.json + dirs
+vmcp mcp add --transport http notion https://mcp.notion.com/mcp
+vmcp mcp add --transport http secure https://api.example.com/mcp --bearer '${API_KEY}'
+vmcp mcp add --transport stdio time -- uvx mcp-server-time
+vmcp mcp add --env KEY=val --transport stdio airtable -- npx -y airtable-mcp-server
+vmcp mcp list
+vmcp mcp get time
+vmcp mcp remove time
+```
+
+Опции (`--transport`, `--env`, `--bearer`, …) — **до** имени сервера; для stdio команда и args — после `--`. Путь к registry берётся из `--config` / `VMCP_CONFIG` (`registry_path`). `${ENV}` в URL/bearer не раскрываются при записи CLI.
+
+Нет файла → пустой пул (шлюз стартует). Единственный ключ списка — **`upstreams`** (legacy `servers` в 1.0 = ошибка парсинга).
 
 ```json
 {
@@ -186,12 +201,12 @@ Default в коде `false`; в поставляемом `vmcp.toml` demo proxy 
 
 ## Чеклист: новый upstream end-to-end
 
-1. **Сервис** — запись в `registry.json` (`stdio`/`http`)
+1. **Сервис** — `vmcp mcp add …` или ручная запись в `registry.json` (`stdio`/`http`)
 2. **Sidecar** (опц.) — `specs/<name>.json` + `sidecar_spec`
 3. **Skills** (опц.) — YAML, учит агента GraphQL-форме сервера
 4. **Proxy** (опц.) — `[proxy] enabled = true` для `{server}__*` tools/prompts
 5. **Tasks** (опц.) — `task_support` на долгих + `[tasks]` ([tasks.md](tasks.md))
-6. Рестарт + проверка:
+6. Рестарт (или hot-reload registry) + проверка:
 
 ```bash
 curl -fsS http://127.0.0.1:8765/health

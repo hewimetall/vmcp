@@ -46,6 +46,10 @@ VMCP_AUTH__MASTER_PASSWORD_ARGON2='$argon2id$...' cargo run -p vmcp
 Утилиты:
 
 ```bash
+cargo run -p vmcp -- init
+cargo run -p vmcp -- mcp add --transport http notion https://mcp.notion.com/mcp
+cargo run -p vmcp -- mcp add --transport stdio time -- uvx mcp-server-time
+cargo run -p vmcp -- mcp list
 cargo run -p vmcp -- hash-password --password 'secret'
 cargo run -p vmcp -- print-config
 ```

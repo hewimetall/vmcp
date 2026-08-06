@@ -1,7 +1,10 @@
 //! vmcp — Virtual MCP gateway binary.
 //!
-//! HTTP ingress only (`serve`): Axum + StreamableHttpService at `/mcp`, OAuth
+//! HTTP ingress (`serve`): Axum + StreamableHttpService at `/mcp`, OAuth
 //! bearer, optional admin UI and transparent proxy.
+//!
+//! Operator CLI: `init` scaffolds a project; `mcp add|list|get|remove` edits
+//! `registry.json` (Claude-style syntax).
 //!
 //! Local stdio MCP hosts use [`vmcp-lite`](https://github.com/hewimetall/vmcp-lite)
 //! (`uvx vmcp-lite-mcp`) instead.
@@ -10,6 +13,7 @@
 
 mod api_v1;
 mod boot;
+mod cli;
 #[cfg(not(feature = "otel"))]
 mod mcp_capture;
 #[cfg(feature = "otel")]
@@ -25,6 +29,7 @@ use tracing_subscriber::EnvFilter;
 use vmcp_auth::{password, static_tokens};
 
 use boot::BootContext;
+use cli::McpCommand;
 
 #[derive(Parser, Debug)]
 #[command(name = "vmcp", version, about = "Virtual MCP gateway")]
@@ -41,6 +46,20 @@ struct Cli {
 enum Command {
     /// Run the HTTP gateway (default if no subcommand given).
     Serve,
+    /// Scaffold vmcp.toml, empty registry.json, and specs/skills/state dirs.
+    Init {
+        /// Directory to initialize (default: current directory).
+        #[arg(long)]
+        dir: Option<PathBuf>,
+        /// Overwrite existing vmcp.toml / registry.json.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Manage upstream MCP servers in registry.json (Claude-style).
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommand,
+    },
     /// Generate an argon2id hash from a master password.
     HashPassword {
         /// The password to hash. If absent, read from stdin.
@@ -83,6 +102,12 @@ async fn main() -> Result<()> {
     init_tracing();
 
     match command {
+        Command::Init { dir, force } => {
+            return cli::run_init(dir.as_deref(), force);
+        }
+        Command::Mcp { command } => {
+            return cli::run_mcp(cli.config.as_deref(), command);
+        }
         Command::HashPassword { password } => {
             let p = match password {
                 Some(p) => p,

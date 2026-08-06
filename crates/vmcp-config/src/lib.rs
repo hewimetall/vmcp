@@ -269,6 +269,128 @@ impl Default for UpstreamConfig {
     }
 }
 
+/// Which auth backend the facade mounts.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthProviderKind {
+    /// Built-in OAuth 2.1 AS + RS (DCR, PKCE, local JWKS, master-password consent).
+    #[default]
+    Local,
+    /// External Authentik IdP: Bearer JWT + optional forward-auth headers.
+    Authentik,
+}
+
+/// How `/admin` authenticates operators.
+///
+/// Independent of the MCP facade (`provider`): admin may be open, HTTP Basic,
+/// or Authentik forward-auth headers.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AdminAuthMode {
+    /// No auth on `/admin` (local/dev only).
+    None,
+    /// HTTP Basic (`user:password`) against `master_password_argon2`.
+    #[default]
+    Basic,
+    /// Trust gateway `X-authentik-*` headers (exact group membership).
+    Authentik,
+}
+
+/// Settings for the `/admin` SPA auth gate (`[auth.admin]`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AdminAuthSettings {
+    /// `none` | `basic` (default) | `authentik`.
+    #[serde(default)]
+    pub mode: AdminAuthMode,
+    /// Exact Authentik groups that may open `/admin` when `mode = authentik`.
+    /// Matching uses delimiter-split + exact equality (never substring).
+    #[serde(default)]
+    pub required_groups: Vec<String>,
+    /// Override username header (default: `[auth.authentik].username_header`).
+    #[serde(default)]
+    pub username_header: Option<String>,
+    /// Override groups header (default: `[auth.authentik].groups_header`).
+    #[serde(default)]
+    pub groups_header: Option<String>,
+}
+
+impl Default for AdminAuthSettings {
+    fn default() -> Self {
+        Self {
+            mode: AdminAuthMode::Basic,
+            required_groups: Vec::new(),
+            username_header: None,
+            groups_header: None,
+        }
+    }
+}
+
+/// Authentik-specific settings (`[auth.authentik]`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AuthentikSettings {
+    /// OIDC issuer URL (with trailing slash), e.g.
+    /// `https://auth.example.com/application/o/mcp-internal/`.
+    #[serde(default)]
+    pub issuer: String,
+    /// JWKS URL for signature verification.
+    #[serde(default)]
+    pub jwks_url: String,
+    /// Accepted JWT `aud` values (resource indicators). Empty → derived from
+    /// `public_base_url` + mcp/proxy paths at boot.
+    #[serde(default)]
+    pub audiences: Vec<String>,
+    /// Accept `Authorization: Bearer` JWTs from Authentik (MCP clients).
+    #[serde(default = "AuthentikSettings::default_true")]
+    pub accept_bearer: bool,
+    /// Accept `X-authentik-*` headers from a trusted forward-auth gateway.
+    #[serde(default = "AuthentikSettings::default_true")]
+    pub forward_auth: bool,
+    /// Username header (default `x-authentik-username`).
+    #[serde(default = "AuthentikSettings::default_username_header")]
+    pub username_header: String,
+    /// Groups header (default `x-authentik-groups`).
+    #[serde(default = "AuthentikSettings::default_groups_header")]
+    pub groups_header: String,
+    /// JWT claim carrying groups (default `groups`).
+    #[serde(default = "AuthentikSettings::default_groups_claim")]
+    pub groups_claim: String,
+    /// Exact Authentik group → space-separated MCP scopes.
+    /// Matching is exact after delimiter split (`|`, `,`, `;`, space).
+    #[serde(default)]
+    pub group_scopes: std::collections::BTreeMap<String, String>,
+}
+
+impl AuthentikSettings {
+    fn default_true() -> bool {
+        true
+    }
+    fn default_username_header() -> String {
+        "x-authentik-username".into()
+    }
+    fn default_groups_header() -> String {
+        "x-authentik-groups".into()
+    }
+    fn default_groups_claim() -> String {
+        "groups".into()
+    }
+}
+
+impl Default for AuthentikSettings {
+    fn default() -> Self {
+        Self {
+            issuer: String::new(),
+            jwks_url: String::new(),
+            audiences: Vec::new(),
+            accept_bearer: true,
+            forward_auth: true,
+            username_header: Self::default_username_header(),
+            groups_header: Self::default_groups_header(),
+            groups_claim: Self::default_groups_claim(),
+            group_scopes: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
 /// OAuth 2.1 AS + RS configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AuthConfig {
@@ -277,9 +399,12 @@ pub struct AuthConfig {
     /// nested — intended for local dev clusters only.
     #[serde(default = "AuthConfig::default_enabled")]
     pub enabled: bool,
+    /// Auth facade backend: `local` (default) or `authentik`.
+    #[serde(default)]
+    pub provider: AuthProviderKind,
     /// argon2id-encoded master password (generate via `vmcp hash-password`).
-    /// Required when `enabled = true`; ignored otherwise. Defaults to empty so
-    /// a minimal `[auth] enabled = false` block parses without it.
+    /// Required when `enabled = true` and `provider = local`; optional for
+    /// Authentik (only needed if `/admin` Basic auth should stay available).
     #[serde(default)]
     pub master_password_argon2: String,
     /// JWT key ID exposed via JWKS.
@@ -287,7 +412,7 @@ pub struct AuthConfig {
     pub jwt_kid: String,
     /// JWKS rotation interval. Two-key window (current + previous) covers
     /// tokens issued just before rotation. Must be >= 2 * token_ttl_secs
-    /// when `enabled = true`.
+    /// when `enabled = true` and `provider = local`.
     #[serde(default = "AuthConfig::default_jwks_rotate_secs")]
     pub jwks_rotate_secs: u64,
     /// Access-token TTL.
@@ -324,6 +449,12 @@ pub struct AuthConfig {
     /// Override via `VMCP_AUTH__JWKS_PRIVATE_KEY_PEM_PATH`.
     #[serde(default)]
     pub jwks_private_key_pem_path: Option<PathBuf>,
+    /// Authentik settings when `provider = "authentik"`.
+    #[serde(default)]
+    pub authentik: AuthentikSettings,
+    /// `/admin` SPA auth: `none` | `basic` | `authentik` headers.
+    #[serde(default)]
+    pub admin: AdminAuthSettings,
 }
 
 impl AuthConfig {
@@ -351,6 +482,7 @@ impl Default for AuthConfig {
     fn default() -> Self {
         Self {
             enabled: Self::default_enabled(),
+            provider: AuthProviderKind::Local,
             master_password_argon2: String::new(),
             jwt_kid: Self::default_jwt_kid(),
             jwks_rotate_secs: Self::default_jwks_rotate_secs(),
@@ -362,6 +494,8 @@ impl Default for AuthConfig {
             dcr_max_clients: 0,
             dcr_redirect_uri_allowlist: Vec::new(),
             jwks_private_key_pem_path: None,
+            authentik: AuthentikSettings::default(),
+            admin: AdminAuthSettings::default(),
         }
     }
 }
@@ -407,45 +541,106 @@ impl Settings {
         // the password hash and JWKS rotation window are unused. Skip both
         // checks — operators can leave master_password_argon2 empty.
         if self.auth.enabled {
-            if self.auth.master_password_argon2.is_empty() {
-                return Err(ConfigError::Validation(
-                    "auth.master_password_argon2 is required".into(),
-                ));
+            match self.auth.provider {
+                AuthProviderKind::Local => self.validate_local_auth()?,
+                AuthProviderKind::Authentik => self.validate_authentik_auth()?,
             }
-            if !self.auth.master_password_argon2.starts_with("$argon2") {
-                return Err(ConfigError::Validation(
-                    "auth.master_password_argon2 must be a PHC-encoded argon2 hash".into(),
-                ));
-            }
-            // Actually parse the PHC string. The prefix check above passes for
-            // the shipped placeholder (`…$REPLACE_ME`), whose trailing segment
-            // is not valid Base64 — that slips through boot and only blows up at
-            // the OAuth `/consent` step with a cryptic "invalid Base64 encoding".
-            // Fail fast here with an actionable message instead.
-            if let Err(e) =
-                argon2::password_hash::PasswordHash::new(&self.auth.master_password_argon2)
-            {
-                return Err(ConfigError::Validation(format!(
-                    "auth.master_password_argon2 is not a valid argon2 hash ({e}) — \
-                     generate one with `vmcp hash-password` and set it via \
-                     VMCP_AUTH__MASTER_PASSWORD_ARGON2 or the [auth] block"
-                )));
-            }
-            // Token TTL must fit in the rotation window: clients issued just before
-            // a rotation should still verify against `previous`.
-            if self.auth.jwks_rotate_secs < 2 * self.auth.token_ttl_secs {
-                return Err(ConfigError::Validation(format!(
-                    "auth.jwks_rotate_secs ({}) must be >= 2 * token_ttl_secs ({})",
-                    self.auth.jwks_rotate_secs, self.auth.token_ttl_secs
-                )));
-            }
-            if self.auth.clients_db_path.as_os_str().is_empty() {
-                return Err(ConfigError::Validation(
-                    "auth.clients_db_path must be set when auth.enabled = true".into(),
-                ));
-            }
+            self.validate_admin_auth()?;
         }
         Ok(())
+    }
+
+    fn validate_master_password_hash(&self) -> Result<(), ConfigError> {
+        if self.auth.master_password_argon2.is_empty() {
+            return Err(ConfigError::Validation(
+                "auth.master_password_argon2 is required".into(),
+            ));
+        }
+        if !self.auth.master_password_argon2.starts_with("$argon2") {
+            return Err(ConfigError::Validation(
+                "auth.master_password_argon2 must be a PHC-encoded argon2 hash".into(),
+            ));
+        }
+        // Actually parse the PHC string. The prefix check above passes for
+        // the shipped placeholder (`…$REPLACE_ME`), whose trailing segment
+        // is not valid Base64 — that slips through boot and only blows up at
+        // the OAuth `/consent` step with a cryptic "invalid Base64 encoding".
+        // Fail fast here with an actionable message instead.
+        if let Err(e) = argon2::password_hash::PasswordHash::new(&self.auth.master_password_argon2)
+        {
+            return Err(ConfigError::Validation(format!(
+                "auth.master_password_argon2 is not a valid argon2 hash ({e}) — \
+                 generate one with `vmcp hash-password` and set it via \
+                 VMCP_AUTH__MASTER_PASSWORD_ARGON2 or the [auth] block"
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_local_auth(&self) -> Result<(), ConfigError> {
+        // Local AS consent always needs the master password.
+        self.validate_master_password_hash()?;
+        // Token TTL must fit in the rotation window: clients issued just before
+        // a rotation should still verify against `previous`.
+        if self.auth.jwks_rotate_secs < 2 * self.auth.token_ttl_secs {
+            return Err(ConfigError::Validation(format!(
+                "auth.jwks_rotate_secs ({}) must be >= 2 * token_ttl_secs ({})",
+                self.auth.jwks_rotate_secs, self.auth.token_ttl_secs
+            )));
+        }
+        if self.auth.clients_db_path.as_os_str().is_empty() {
+            return Err(ConfigError::Validation(
+                "auth.clients_db_path must be set when auth.enabled = true".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_authentik_auth(&self) -> Result<(), ConfigError> {
+        let ak = &self.auth.authentik;
+        if ak.issuer.is_empty() {
+            return Err(ConfigError::Validation(
+                "auth.authentik.issuer is required when auth.provider = authentik".into(),
+            ));
+        }
+        if ak.jwks_url.is_empty() {
+            return Err(ConfigError::Validation(
+                "auth.authentik.jwks_url is required when auth.provider = authentik".into(),
+            ));
+        }
+        if !ak.accept_bearer && !ak.forward_auth {
+            return Err(ConfigError::Validation(
+                "auth.authentik: at least one of accept_bearer or forward_auth must be true".into(),
+            ));
+        }
+        if ak.forward_auth && ak.group_scopes.is_empty() {
+            return Err(ConfigError::Validation(
+                "auth.authentik.group_scopes must map at least one group when forward_auth is enabled"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_admin_auth(&self) -> Result<(), ConfigError> {
+        match self.auth.admin.mode {
+            AdminAuthMode::None => Ok(()),
+            AdminAuthMode::Basic => {
+                // Basic admin needs a valid master hash (even under Authentik MCP).
+                // Local provider already validated the same hash — call is idempotent.
+                self.validate_master_password_hash()
+            }
+            AdminAuthMode::Authentik => {
+                if self.auth.admin.required_groups.is_empty() {
+                    return Err(ConfigError::Validation(
+                        "auth.admin.required_groups must list at least one group when \
+                         auth.admin.mode = authentik"
+                            .into(),
+                    ));
+                }
+                Ok(())
+            }
+        }
     }
 
     fn validate_common(&self) -> Result<(), ConfigError> {
@@ -920,5 +1115,108 @@ token_ttl_secs = 3600
         let s = load(Some(&tmp.0)).expect("loads");
         assert_eq!(s.gql.max_response_bytes, 2_097_152);
         assert_eq!(s.gql.response_cap_mode, CapMode::Truncate);
+    }
+
+    #[test]
+    fn authentik_provider_parses_without_master_password() {
+        let tmp = write_tmp(
+            r#"
+[auth]
+enabled = true
+provider = "authentik"
+
+[auth.admin]
+mode = "authentik"
+required_groups = ["mcp-admins"]
+
+[auth.authentik]
+issuer = "https://auth.example.com/application/o/mcp-internal/"
+jwks_url = "https://auth.example.com/application/o/mcp-internal/jwks/"
+audiences = ["https://mcp.example.com/mcp"]
+forward_auth = true
+accept_bearer = true
+group_scopes = { "mcp-users" = "mcp:use" }
+"#,
+        );
+        let s = load(Some(&tmp.0)).expect("authentik auth loads");
+        assert_eq!(s.auth.provider, AuthProviderKind::Authentik);
+        assert_eq!(s.auth.admin.mode, AdminAuthMode::Authentik);
+        assert!(s.auth.master_password_argon2.is_empty());
+        assert_eq!(
+            s.auth.authentik.issuer,
+            "https://auth.example.com/application/o/mcp-internal/"
+        );
+        assert_eq!(
+            s.auth
+                .authentik
+                .group_scopes
+                .get("mcp-users")
+                .map(String::as_str),
+            Some("mcp:use")
+        );
+    }
+
+    #[test]
+    fn authentik_requires_group_scopes_when_forward_auth() {
+        let tmp = write_tmp(
+            r#"
+[auth]
+provider = "authentik"
+
+[auth.admin]
+mode = "none"
+
+[auth.authentik]
+issuer = "https://auth.example.com/application/o/mcp-internal/"
+jwks_url = "https://auth.example.com/application/o/mcp-internal/jwks/"
+forward_auth = true
+"#,
+        );
+        let err = load(Some(&tmp.0)).unwrap_err().to_string();
+        assert!(
+            err.contains("group_scopes"),
+            "expected group_scopes validation, got: {err}"
+        );
+    }
+
+    #[test]
+    fn admin_basic_requires_master_even_under_authentik_mcp() {
+        let tmp = write_tmp(
+            r#"
+[auth]
+provider = "authentik"
+# admin.mode defaults to basic → needs master hash
+
+[auth.authentik]
+issuer = "https://auth.example.com/application/o/mcp-internal/"
+jwks_url = "https://auth.example.com/application/o/mcp-internal/jwks/"
+group_scopes = { "mcp-users" = "mcp:use" }
+"#,
+        );
+        let err = load(Some(&tmp.0)).unwrap_err().to_string();
+        assert!(
+            err.contains("master_password_argon2"),
+            "expected master hash required for admin.basic, got: {err}"
+        );
+    }
+
+    #[test]
+    fn admin_none_allows_authentik_mcp_without_master() {
+        let tmp = write_tmp(
+            r#"
+[auth]
+provider = "authentik"
+
+[auth.admin]
+mode = "none"
+
+[auth.authentik]
+issuer = "https://auth.example.com/application/o/mcp-internal/"
+jwks_url = "https://auth.example.com/application/o/mcp-internal/jwks/"
+group_scopes = { "mcp-users" = "mcp:use" }
+"#,
+        );
+        let s = load(Some(&tmp.0)).expect("admin.none + authentik mcp");
+        assert_eq!(s.auth.admin.mode, AdminAuthMode::None);
     }
 }

@@ -1,8 +1,8 @@
 //! vmcp operator admin panel.
 //!
-//! Mounted under `/admin` by the bin crate. HTTP Basic auth against the same
-//! argon2id master-password hash that gates `/consent`. Per-IP rate limiter
-//! drops brute-forcers to 429 after a small window of failures.
+//! Mounted under `/admin` by the bin crate. Auth is a facade with three modes
+//! (`none` | HTTP Basic | Authentik headers) from `[auth.admin]`. Per-IP rate
+//! limiter drops Basic brute-forcers to 429 after a small window of failures.
 //!
 //! The UI is a single four-zone SPA (`templates/main.html` +
 //! `static/admin.{css,js}`). CSP is tightened so no inline scripts are
@@ -39,7 +39,7 @@ mod integration;
 #[cfg(test)]
 mod ui_regression;
 
-pub use auth::AdminAuth;
+pub use auth::{AdminAuth, AdminAuthPolicy, AdminAuthSource};
 pub use rate_limit::RateLimiter;
 
 /// Shared state for every admin route. Cheap to clone (everything is `Arc`).
@@ -57,8 +57,10 @@ pub struct AdminState {
     /// paths (`list_skills`, MCP `prompts/*`) never take this lock — they
     /// snapshot through the `ArcSwap`.
     pub skills_write_lock: Arc<tokio::sync::Mutex<()>>,
-    /// PHC-encoded argon2id master password hash.
+    /// PHC-encoded argon2id master password hash (used when policy is Basic).
     pub master_hash: Arc<String>,
+    /// `/admin` auth facade policy (`none` | `basic` | `authentik`).
+    pub admin_auth: AdminAuthPolicy,
     pub rate_limiter: Arc<RateLimiter>,
     /// OAuth/DCR registered clients — source of `pre_registered` state in
     /// the Sessions aggregation.
@@ -90,17 +92,24 @@ impl AdminState {
             skills_dir,
             skills_write_lock: Arc::new(tokio::sync::Mutex::new(())),
             master_hash: Arc::new(master_hash),
+            admin_auth: AdminAuthPolicy::Basic,
             rate_limiter: Arc::new(RateLimiter::new(10, std::time::Duration::from_secs(60))),
             auth_state,
             registry,
             recorder,
         }
     }
+
+    /// Override the `/admin` auth policy (default is HTTP Basic).
+    pub fn with_admin_auth(mut self, policy: AdminAuthPolicy) -> Self {
+        self.admin_auth = policy;
+        self
+    }
 }
 
 /// Mount all `/admin/*` routes onto a new router. The bin nests this under
 /// `/admin` via `.nest("/admin", vmcp_admin::router(state))`. Every route is
-/// fronted by HTTP Basic + rate limiter + security headers.
+/// fronted by the admin auth facade + security headers.
 pub fn router(state: AdminState) -> Router {
     let static_dir = resolve_static_dir();
 
@@ -110,7 +119,7 @@ pub fn router(state: AdminState) -> Router {
         .nest_service("/static", tower_http::services::ServeDir::new(static_dir))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
-            auth::require_basic_auth,
+            auth::require_admin_auth,
         ))
         .layer(axum::middleware::from_fn(security::headers))
         .with_state(state)

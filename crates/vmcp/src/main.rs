@@ -156,12 +156,14 @@ async fn serve_http(
     };
     use tracing::{error, warn};
     use vmcp_auth::{
-        build_router as auth_router,
+        build_external_rs_router, build_router as auth_router,
         client_store::ClientStore,
         jwks::JwksManager,
         require_admin_scope, require_bearer,
         state::{AuthState, DcrPolicy},
+        AuthFacade, AuthentikAuth, AuthentikConfig, LocalAuth,
     };
+    use vmcp_config::{AdminAuthMode, AuthProviderKind};
     use vmcp_server::ProxyServer;
     use vmcp_upstream::UpstreamPool;
     use vmcp_watch::spawn_file_watcher;
@@ -186,11 +188,13 @@ async fn serve_http(
     #[cfg(feature = "admin")]
     let bus = ctx.bus.clone();
 
+    let use_local_as = cfg.auth.enabled && cfg.auth.provider == AuthProviderKind::Local;
+
     let jwks = JwksManager::open(
         &cfg.auth.jwt_kid,
         cfg.auth.jwks_private_key_pem_path.as_deref(),
     )?;
-    let _rotation = if cfg.auth.enabled {
+    let _rotation = if use_local_as {
         Some(jwks.clone().spawn_rotation_task(
             Duration::from_secs(cfg.auth.jwks_rotate_secs),
             cfg.auth.jwt_kid.clone(),
@@ -208,7 +212,7 @@ async fn serve_http(
     let mut auth_state = AuthState::new(
         jwks.clone(),
         cfg.effective_issuer().to_string(),
-        resource_audience,
+        resource_audience.clone(),
         cfg.auth.token_ttl_secs,
         cfg.auth.master_password_argon2.clone(),
     )
@@ -222,7 +226,7 @@ async fn serve_http(
             auth_state.with_extra_resource_audiences(vec![format!("{base}{}", cfg.proxy.mcp_path)]);
     }
 
-    if cfg.auth.enabled {
+    if use_local_as {
         let store = ClientStore::open(&cfg.auth.clients_db_path).with_context(|| {
             format!(
                 "open DCR clients sqlite db at {}",
@@ -232,7 +236,7 @@ async fn serve_http(
         auth_state = auth_state.with_client_store(std::sync::Arc::new(store))?;
     }
 
-    let _token_watcher = if cfg.auth.enabled {
+    let _token_watcher = if use_local_as {
         if let Some(path) = cfg.auth.tokens_file.clone() {
             let store = static_tokens::StaticTokenStore::load(&path)?;
             auth_state = auth_state.with_token_store(store.clone());
@@ -256,6 +260,48 @@ async fn serve_http(
         } else {
             None
         }
+    } else {
+        None
+    };
+
+    // Auth facade: local OAuth AS/RS or Authentik (OIDC JWT + forward-auth).
+    let auth_facade: Option<AuthFacade> = if cfg.auth.enabled {
+        Some(match cfg.auth.provider {
+            AuthProviderKind::Local => {
+                info!(target: "vmcp::auth", provider = "local", "auth facade: local OAuth AS/RS");
+                AuthFacade::Local(LocalAuth::new(auth_state.clone()))
+            }
+            AuthProviderKind::Authentik => {
+                let ak = &cfg.auth.authentik;
+                let mut audiences = ak.audiences.clone();
+                if audiences.is_empty() {
+                    audiences.push(resource_audience.clone());
+                    if cfg.proxy.enabled {
+                        audiences.push(format!("{base}{}", cfg.proxy.mcp_path));
+                    }
+                }
+                info!(
+                    target: "vmcp::auth",
+                    provider = "authentik",
+                    issuer = %ak.issuer,
+                    forward_auth = ak.forward_auth,
+                    accept_bearer = ak.accept_bearer,
+                    "auth facade: Authentik OIDC resource server"
+                );
+                AuthFacade::Authentik(AuthentikAuth::new(AuthentikConfig {
+                    issuer: ak.issuer.clone(),
+                    jwks_url: ak.jwks_url.clone(),
+                    audiences,
+                    resource: resource_audience.clone(),
+                    accept_bearer: ak.accept_bearer,
+                    forward_auth: ak.forward_auth,
+                    username_header: ak.username_header.clone(),
+                    groups_header: ak.groups_header.clone(),
+                    groups_claim: ak.groups_claim.clone(),
+                    group_scopes: ak.group_scopes.clone(),
+                })?)
+            }
+        })
     } else {
         None
     };
@@ -369,11 +415,8 @@ async fn serve_http(
                 },
                 mcp_capture::capture_mcp,
             ));
-    if cfg.auth.enabled {
-        mcp_router = mcp_router.layer(middleware::from_fn_with_state(
-            auth_state.clone(),
-            require_bearer,
-        ));
+    if let Some(facade) = auth_facade.clone() {
+        mcp_router = mcp_router.layer(middleware::from_fn_with_state(facade, require_bearer));
     }
 
     #[derive(Clone)]
@@ -424,10 +467,21 @@ async fn serve_http(
     };
 
     let mut app = Router::new()
-        .merge(auth_router(auth_state.clone()))
         .route("/health", get(|| async { "ok" }))
         .route("/ready", get(ready_handler).with_state(ready_state))
         .nest(&cfg.mcp_path, mcp_router);
+
+    // Local AS mounts full OAuth surface; Authentik mode only advertises PRM
+    // pointing at the external authorization server.
+    if use_local_as {
+        app = app.merge(auth_router(auth_state.clone()));
+    } else if let Some(AuthFacade::Authentik(ref ak)) = auth_facade {
+        app = app.merge(build_external_rs_router(
+            ak.resource.clone(),
+            vec![ak.issuer.clone()],
+            ak.audiences.clone(),
+        ));
+    }
 
     // Registry hot-reload (file watcher + /api/v1/upstreams/reload).
     let reload_handle = RegistryReloadHandle::new(
@@ -470,7 +524,9 @@ async fn serve_http(
     };
 
     // Operator control-plane (Bearer + mcp:admin). Parallel to `/admin` Basic SPA.
-    if cfg.auth.enabled {
+    // Token CRUD needs local static tokens_file — skip under Authentik-only mode
+    // unless a tokens_file is still configured with local facade (local only).
+    if use_local_as {
         let reload = reload_handle.clone();
         let pool_status = reload_handle.pool();
         let api_state = ApiV1State::new(auth_state.clone(), cfg.auth.tokens_file.clone())
@@ -479,31 +535,67 @@ async fn serve_http(
                 Box::pin(async move { reload.reload().await })
             }))
             .with_pool(pool_status);
+        let facade = auth_facade.clone().expect("local AS implies auth facade");
         let api_router = api_v1::router(api_state)
             .layer(middleware::from_fn(require_admin_scope))
-            .layer(middleware::from_fn_with_state(
-                auth_state.clone(),
-                require_bearer,
-            ));
+            .layer(middleware::from_fn_with_state(facade, require_bearer));
         app = app.nest("/api/v1", api_router);
     }
 
     #[cfg(feature = "admin")]
     {
-        let admin_state = vmcp_admin::AdminState::new(
-            pool.clone(),
-            schema_swap.clone(),
-            bus.clone(),
-            skills.clone(),
-            cfg.skills_dir.clone(),
-            cfg.auth.master_password_argon2.clone(),
-            auth_state.clone(),
-            registry.clone(),
-            recorder.clone(),
-        );
-        let admin_router = vmcp_admin::router(admin_state);
+        // `/admin` mounts whenever auth is enabled; gate mode is independent of
+        // the MCP facade: none | basic (login:pass) | authentik headers.
         if cfg.auth.enabled {
-            app = app.nest("/admin", admin_router);
+            let admin_policy = match cfg.auth.admin.mode {
+                AdminAuthMode::None => {
+                    warn!(
+                        target: "vmcp::auth",
+                        "auth.admin.mode = none — /admin is unauthenticated"
+                    );
+                    vmcp_admin::AdminAuthPolicy::None
+                }
+                AdminAuthMode::Basic => vmcp_admin::AdminAuthPolicy::Basic,
+                AdminAuthMode::Authentik => {
+                    let user_h = cfg
+                        .auth
+                        .admin
+                        .username_header
+                        .as_deref()
+                        .unwrap_or(cfg.auth.authentik.username_header.as_str());
+                    let groups_h = cfg
+                        .auth
+                        .admin
+                        .groups_header
+                        .as_deref()
+                        .unwrap_or(cfg.auth.authentik.groups_header.as_str());
+                    vmcp_admin::AdminAuthPolicy::Authentik {
+                        username_header: axum::http::HeaderName::from_bytes(user_h.as_bytes())
+                            .context("auth.admin.username_header")?,
+                        groups_header: axum::http::HeaderName::from_bytes(groups_h.as_bytes())
+                            .context("auth.admin.groups_header")?,
+                        required_groups: cfg.auth.admin.required_groups.clone(),
+                    }
+                }
+            };
+            info!(
+                target: "vmcp::auth",
+                admin_mode = ?cfg.auth.admin.mode,
+                "admin auth facade"
+            );
+            let admin_state = vmcp_admin::AdminState::new(
+                pool.clone(),
+                schema_swap.clone(),
+                bus.clone(),
+                skills.clone(),
+                cfg.skills_dir.clone(),
+                cfg.auth.master_password_argon2.clone(),
+                auth_state.clone(),
+                registry.clone(),
+                recorder.clone(),
+            )
+            .with_admin_auth(admin_policy);
+            app = app.nest("/admin", vmcp_admin::router(admin_state));
         }
     }
 
@@ -537,11 +629,9 @@ async fn serve_http(
                 mcp_capture::capture_mcp,
             ),
         );
-        if cfg.auth.enabled {
-            proxy_router = proxy_router.layer(middleware::from_fn_with_state(
-                auth_state.clone(),
-                require_bearer,
-            ));
+        if let Some(facade) = auth_facade.clone() {
+            proxy_router =
+                proxy_router.layer(middleware::from_fn_with_state(facade, require_bearer));
         }
         info!(path = %cfg.proxy.mcp_path, "proxy mode enabled");
         app = app.nest(&cfg.proxy.mcp_path, proxy_router);

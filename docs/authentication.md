@@ -1,21 +1,80 @@
 # Аутентификация
 
-`/mcp` (и `/mcp-proxy`) — OAuth 2.1 + PKCE + DCR, принимают Bearer JWT или static `vmcp_…` token. `/admin` — отдельно, **HTTP Basic** против master password (не bearer).
+`/mcp` (и `/mcp-proxy`) защищены через **auth facade**: либо встроенный OAuth 2.1 AS/RS (`provider = "local"`), либо внешний [Authentik](https://github.com/goauthentik/authentik) (`provider = "authentik"`). `/admin` — отдельный фасад с тремя режимами.
 
 ## Поверхности
 
 | Path | Auth | Назначение |
 | ---- | ---- | ---------- |
-| `/mcp` | Bearer JWT или `vmcp_…` | MCP streamable HTTP |
+| `/mcp` | Bearer JWT / `vmcp_…` / Authentik forward-auth | MCP streamable HTTP |
 | `/mcp-proxy` | то же (если `[proxy]`) | Transparent upstream tools |
-| `/admin` | HTTP Basic (master password) | Operator SPA |
+| `/admin` | `none` \| HTTP Basic \| Authentik headers | Operator SPA |
 | `/health` | нет | Liveness |
 | `/ready` | нет | Readiness (soft: ≥1 connected upstream, если в registry есть enabled) |
-| `/authorize`, `/consent`, `/token`, `/register`, `/.well-known/*` | нет | OAuth + metadata |
+| `/authorize`, `/consent`, `/token`, `/register`, `/.well-known/*` | нет | OAuth + metadata (local AS) |
 
 ---
 
-## OAuth flow
+## Auth facade: `local` vs `authentik`
+
+Одна точка входа (`AuthFacade`) на каждый защищённый запрос. Аноним / роль по умолчанию **никогда** не подставляются.
+
+| | `provider = "local"` (default) | `provider = "authentik"` |
+| - | --- | --- |
+| Кто выдаёт токены | vmcp (DCR + PKCE + consent) | Authentik OAuth2/OIDC |
+| MCP-клиент | Bearer JWT или `vmcp_…` | Bearer JWT от Authentik |
+| Браузер за шлюзом | — | `X-authentik-username` + `X-authentik-groups` |
+| JWT verify | локальный JWKS | [`async-oidc-jwt-validator`](https://crates.io/crates/async-oidc-jwt-validator) + Authentik JWKS |
+| Local `/authorize`… | да | нет (только PRM → Authentik) |
+
+### Authentik (рекомендуемая схема без DCR)
+
+```toml
+[auth]
+enabled = true
+provider = "authentik"
+# master_password_argon2 опционален — только если нужен /admin Basic
+
+[auth.authentik]
+issuer = "https://auth.example.com/application/o/mcp-internal/"
+jwks_url = "https://auth.example.com/application/o/mcp-internal/jwks/"
+# пусто → public_base_url + /mcp (+ /mcp-proxy)
+audiences = ["https://architecture.mcpwork.space/mcp"]
+accept_bearer = true          # MCP-клиенты
+forward_auth = true           # браузер за Envoy/Caddy forward-auth
+group_scopes = { "mcp-users" = "mcp:use", "mcp-admins" = "mcp:admin" }
+```
+
+Правила forward-auth:
+
+1. Нет `X-authentik-username` → отказ (не аноним).
+2. Группы режутся по `|`, `,`, `;`, пробелу; сравнение **точное** (`architect-x` ≠ `architect`).
+3. Scope из `group_scopes` считается на **каждом** запросе.
+
+Предпочтительно: pre-registered public client в Authentik + Authorization Code + PKCE (не DCR).
+
+### `/admin` auth: `none` | `basic` | `authentik`
+
+Независимо от MCP `provider`:
+
+| `auth.admin.mode` | Как пускает |
+| ----------------- | ----------- |
+| `none` | без проверки (только локально) |
+| `basic` (default) | HTTP Basic `login:password` → `master_password_argon2` |
+| `authentik` | заголовки `X-authentik-username` / `X-authentik-groups`; нужна точная группа из `required_groups` |
+
+```toml
+[auth.admin]
+mode = "authentik"
+required_groups = ["mcp-admins"]
+# username_header / groups_header — опционально; иначе из [auth.authentik]
+```
+
+При `mode = authentik`: нет username-заголовка → 401; группа сравнивается **точно** после split по `|`, `,`, `;`, пробелу (`architect-x` ≠ `architect`).
+
+---
+
+## OAuth flow (local)
 
 ```
 1. GET  /.well-known/oauth-authorization-server   # discovery

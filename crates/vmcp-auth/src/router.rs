@@ -21,6 +21,77 @@ use crate::state::AuthState;
 use crate::tokens::issue_access_token;
 use crate::types::*;
 
+/// Protected-resource metadata only (Authentik / external AS mode).
+///
+/// MCP clients discover Authentik via `authorization_servers`; vmcp does not
+/// mount local `/authorize`, `/token`, or DCR in this mode.
+pub fn build_external_rs_router(
+    resource: String,
+    authorization_servers: Vec<String>,
+    resource_audiences: Vec<String>,
+) -> Router {
+    let state = ExternalRsState {
+        resource: resource.clone(),
+        authorization_servers,
+        resource_audiences,
+    };
+    let mut router = Router::new().route(
+        "/.well-known/oauth-protected-resource",
+        get(external_rs_metadata),
+    );
+    for aud in &state.resource_audiences {
+        if let Ok(url) = url::Url::parse(aud) {
+            let path = url.path();
+            if path.len() > 1 {
+                let route = format!("/.well-known/oauth-protected-resource{path}");
+                router = router.route(&route, get(external_rs_metadata_scoped));
+            }
+        }
+    }
+    router.with_state(state)
+}
+
+#[derive(Clone)]
+struct ExternalRsState {
+    resource: String,
+    authorization_servers: Vec<String>,
+    resource_audiences: Vec<String>,
+}
+
+async fn external_rs_metadata(State(s): State<ExternalRsState>) -> Json<ProtectedResourceMetadata> {
+    Json(ProtectedResourceMetadata {
+        resource: s.resource.clone(),
+        authorization_servers: s.authorization_servers.clone(),
+        bearer_methods_supported: vec!["header"],
+        resource_documentation: s.authorization_servers.first().cloned(),
+    })
+}
+
+async fn external_rs_metadata_scoped(
+    State(s): State<ExternalRsState>,
+    axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
+) -> Result<Json<ProtectedResourceMetadata>, StatusCode> {
+    const PREFIX: &str = "/.well-known/oauth-protected-resource";
+    let suffix = uri.path().strip_prefix(PREFIX).unwrap_or("");
+    if suffix.is_empty() || !suffix.starts_with('/') {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let matched = s.resource_audiences.iter().find(|aud| {
+        url::Url::parse(aud)
+            .ok()
+            .is_some_and(|u| u.path() == suffix)
+    });
+    match matched {
+        Some(resource) => Ok(Json(ProtectedResourceMetadata {
+            resource: resource.clone(),
+            authorization_servers: s.authorization_servers.clone(),
+            bearer_methods_supported: vec!["header"],
+            resource_documentation: s.authorization_servers.first().cloned(),
+        })),
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
 /// Mount all OAuth-facing routes. None require authentication themselves —
 /// authentication is for the MCP endpoint, layered separately by the bin
 /// crate.

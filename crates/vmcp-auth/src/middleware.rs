@@ -1,4 +1,8 @@
-//! Bearer-auth middleware for protecting `/mcp`.
+//! Bearer / forward-auth middleware for protecting `/mcp`.
+//!
+//! Delegates credential resolution to [`AuthFacade`] so local OAuth and
+//! Authentik share one gate. Scope enforcement still happens downstream on
+//! every tool call via [`crate::scopes::ScopePolicy`].
 
 use axum::{
     body::Body,
@@ -8,90 +12,33 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-use crate::state::AuthState;
-use crate::static_tokens::{self, TokenInfo};
-use crate::tokens::verify_access_token;
+use crate::facade::{AuthFacade, AuthReject};
 use crate::types::AccessTokenClaims;
 
-/// Reject if no valid Bearer token. On success, attach the verified claims to
-/// the request extensions so downstream handlers can introspect them.
+/// Reject if authentication fails. On success, attach verified claims so
+/// downstream handlers can introspect them.
 pub async fn require_bearer(
-    State(state): State<AuthState>,
+    State(facade): State<AuthFacade>,
     mut req: Request<Body>,
     next: Next,
 ) -> Response {
-    let header_value = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
-
-    let token = match header_value.and_then(|h| h.strip_prefix("Bearer ")) {
-        Some(t) => t.trim(),
-        None => return unauthorized(&state, "missing_bearer"),
-    };
-    if token.is_empty() {
-        return unauthorized(&state, "empty_bearer");
-    }
-
-    // Static "pre-registered" token fast-path: opaque, eternal, file-backed,
-    // independent of JWKS. A `vmcp_`-prefixed bearer is NEVER a JWT, so a miss
-    // 401s immediately rather than falling through to (futile) JWT verify.
-    // Non-prefixed tokens skip this block and take the JWT path unchanged.
-    if let Some(store) = &state.token_store {
-        if token.starts_with(static_tokens::TOKEN_PREFIX) {
-            return match store.lookup(token) {
-                Some(info) => {
-                    req.extensions_mut()
-                        .insert(synth_static_claims(&state, &info));
-                    next.run(req).await
-                }
-                None => {
-                    tracing::debug!("unknown static token");
-                    unauthorized(&state, "invalid_token")
-                }
-            };
-        }
-    }
-
-    let audiences = state.audience_refs();
-    match verify_access_token(&state.jwks, token, &state.issuer, &audiences) {
-        Ok(claims) => {
-            req.extensions_mut().insert(claims);
+    match facade.authenticate(req.headers()).await {
+        Ok(identity) => {
+            req.extensions_mut().insert(identity.into_claims());
             next.run(req).await
         }
-        Err(e) => {
-            tracing::debug!(error = %e, "bearer rejected");
-            unauthorized(&state, "invalid_token")
-        }
+        Err(reject) => unauthorized(&facade, reject),
     }
 }
 
-/// Build claims for a verified static token. Mirrors the JWT claim shape so
-/// everything downstream (recorder, admin) treats it uniformly. `exp` is set
-/// ~100 years out — far-future but overflow-safe (not `i64::MAX`); nothing
-/// re-validates it after this point, since the static path never expires.
-fn synth_static_claims(state: &AuthState, info: &TokenInfo) -> AccessTokenClaims {
-    let now = chrono::Utc::now().timestamp();
-    let exp = now + 100 * 365 * 24 * 3600;
-    AccessTokenClaims {
-        iss: state.issuer.clone(),
-        aud: state.resource_audience.clone(),
-        sub: info.client_id.clone(),
-        client_id: info.client_id.clone(),
-        scope: info.scope.clone(),
-        iat: now,
-        exp,
-        jti: uuid::Uuid::new_v4().to_string(),
-    }
-}
-
-fn unauthorized(state: &AuthState, error: &str) -> Response {
-    let prm = format!(
-        "{}/.well-known/oauth-protected-resource",
-        state.issuer.trim_end_matches('/')
-    );
-    let challenge = format!("Bearer resource_metadata=\"{prm}\", error=\"{error}\"");
-    let mut resp = (StatusCode::UNAUTHORIZED, error.to_string()).into_response();
+fn unauthorized(facade: &AuthFacade, reject: AuthReject) -> Response {
+    let error = reject.as_error_code();
+    let challenge = facade.www_authenticate(error);
+    let status = match reject {
+        AuthReject::InsufficientScope => StatusCode::FORBIDDEN,
+        _ => StatusCode::UNAUTHORIZED,
+    };
+    let mut resp = (status, error.to_string()).into_response();
     resp.headers_mut().insert(
         header::WWW_AUTHENTICATE,
         challenge.parse().expect("static header value"),
@@ -131,6 +78,8 @@ fn unauthorized_plain(error: &str) -> Response {
 mod tests {
     use super::*;
     use crate::jwks::JwksManager;
+    use crate::providers::local::LocalAuth;
+    use crate::state::AuthState;
     use crate::static_tokens::{self, StaticTokenStore};
     use crate::tokens::issue_access_token;
     use axum::{
@@ -166,14 +115,14 @@ mod tests {
 
     const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$YWFhYWFhYWFhYWFhYWFhYQ$dG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4";
 
-    fn state_with_store(file: &Path) -> AuthState {
+    fn facade_with_store(file: &Path) -> AuthFacade {
         let jwks = JwksManager::new_with_fresh("kid-test").unwrap();
         let store = StaticTokenStore::load(file).unwrap();
-        AuthState::new(jwks, "https://iss", "https://iss", 3600, DUMMY_HASH).with_token_store(store)
+        let state = AuthState::new(jwks, "https://iss", "https://iss", 3600, DUMMY_HASH)
+            .with_token_store(store);
+        AuthFacade::Local(LocalAuth::new(state))
     }
 
-    /// Handler that echoes the resolved `client_id` so tests can assert which
-    /// auth path produced the claims.
     async fn echo_client_id(req: Request<Body>) -> Response {
         match claims_from_extensions(req.extensions()) {
             Some(c) => (StatusCode::OK, c.client_id.clone()).into_response(),
@@ -181,10 +130,10 @@ mod tests {
         }
     }
 
-    fn app(state: AuthState) -> Router {
+    fn app(facade: AuthFacade) -> Router {
         Router::new()
             .route("/mcp", post(echo_client_id))
-            .layer(axum::middleware::from_fn_with_state(state, require_bearer))
+            .layer(axum::middleware::from_fn_with_state(facade, require_bearer))
     }
 
     async fn body_string(resp: Response) -> String {
@@ -210,7 +159,7 @@ mod tests {
         let entry = static_tokens::generate_entry("ci", Some("mcp:use")).unwrap();
         static_tokens::append_atomic(&file, &entry).unwrap();
 
-        let resp = app(state_with_store(&file))
+        let resp = app(facade_with_store(&file))
             .oneshot(bearer_req(&entry.token))
             .await
             .unwrap();
@@ -226,11 +175,10 @@ mod tests {
     async fn unknown_static_token_is_rejected_without_jwt_fallthrough() {
         let dir = TempDir::new();
         let file = dir.path().join("tokens.json");
-        // Store has one token; we present a different vmcp_ token.
         let entry = static_tokens::generate_entry("ci", None).unwrap();
         static_tokens::append_atomic(&file, &entry).unwrap();
 
-        let resp = app(state_with_store(&file))
+        let resp = app(facade_with_store(&file))
             .oneshot(bearer_req("vmcp_definitely-not-registered"))
             .await
             .unwrap();
@@ -240,29 +188,31 @@ mod tests {
     #[tokio::test]
     async fn jwt_path_still_works_when_store_present() {
         let dir = TempDir::new();
-        let file = dir.path().join("tokens.json"); // empty store
-        let state = state_with_store(&file);
-        // A real JWT (no vmcp_ prefix) must bypass the static path entirely.
+        let file = dir.path().join("tokens.json");
+        let facade = facade_with_store(&file);
+        let AuthFacade::Local(local) = &facade else {
+            panic!("expected local");
+        };
         let (jwt, _) = issue_access_token(
-            &state.jwks,
-            &state.issuer,
-            &state.resource_audience,
+            &local.state.jwks,
+            &local.state.issuer,
+            &local.state.resource_audience,
             "jwt-client",
             "mcp:use",
             3600,
         )
         .unwrap();
 
-        let resp = app(state).oneshot(bearer_req(&jwt)).await.unwrap();
+        let resp = app(facade).oneshot(bearer_req(&jwt)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(body_string(resp).await, "jwt-client");
     }
 
-    fn admin_app(state: AuthState) -> Router {
+    fn admin_app(facade: AuthFacade) -> Router {
         Router::new()
             .route("/api/v1/ping", post(echo_client_id))
             .layer(axum::middleware::from_fn(require_admin_scope))
-            .layer(axum::middleware::from_fn_with_state(state, require_bearer))
+            .layer(axum::middleware::from_fn_with_state(facade, require_bearer))
     }
 
     fn admin_bearer_req(token: &str) -> Request<Body> {
@@ -282,21 +232,21 @@ mod tests {
         let agent = static_tokens::generate_entry("agent", Some("mcp:use")).unwrap();
         static_tokens::append_atomic(&file, &admin).unwrap();
         static_tokens::append_atomic(&file, &agent).unwrap();
-        let state = state_with_store(&file);
+        let facade = facade_with_store(&file);
 
-        let ok = admin_app(state.clone())
+        let ok = admin_app(facade.clone())
             .oneshot(admin_bearer_req(&admin.token))
             .await
             .unwrap();
         assert_eq!(ok.status(), StatusCode::OK);
 
-        let forbidden = admin_app(state.clone())
+        let forbidden = admin_app(facade.clone())
             .oneshot(admin_bearer_req(&agent.token))
             .await
             .unwrap();
         assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
 
-        let missing = admin_app(state)
+        let missing = admin_app(facade)
             .oneshot(
                 Request::builder()
                     .uri("/api/v1/ping")

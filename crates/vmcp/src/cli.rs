@@ -59,15 +59,8 @@ redact_keys      = ["password", "secret", "token", "api_key", "Authorization"]
 idle_ttl_secs    = 300
 gc_interval_secs = 30
 
-# Enable with: vmcp add tasks
-# [tasks]
-# enabled = true
-# db_path = "state/tasks.db"
-
-# Flat upstream tools/prompts on /mcp-proxy:
-# [proxy]
-# enabled = true
-# mcp_path = "/mcp-proxy"
+# Enable SEP-1686 run_task with: vmcp add tasks
+# Enable flat upstream proxy with a proxy table (see docs/upstreams.md)
 "#;
 
 const INIT_REGISTRY: &str = "{\n  \"upstreams\": []\n}\n";
@@ -702,6 +695,19 @@ fn skill_remove(config: Option<&Path>, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Byte offset of a real TOML table header line `[name]` (ignores `# [name]` comments).
+fn find_toml_table(text: &str, name: &str) -> Option<usize> {
+    let header = format!("[{name}]");
+    let mut offset = 0usize;
+    for line in text.split_inclusive('\n') {
+        if line.trim() == header {
+            return Some(offset);
+        }
+        offset += line.len();
+    }
+    None
+}
+
 fn tasks_enable(config: Option<&Path>) -> Result<()> {
     let path = config
         .map(Path::to_path_buf)
@@ -710,19 +716,30 @@ fn tasks_enable(config: Option<&Path>) -> Result<()> {
         bail!("{} not found — run `vmcp init` first", path.display());
     }
     let mut text = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-    if let Some(section_start) = text.find("[tasks]") {
-        let after = &text[section_start..];
-        let section_end = after
-            .find("\n[")
-            .map(|i| section_start + i)
-            .unwrap_or(text.len());
+    if let Some(section_start) = find_toml_table(&text, "tasks") {
+        let rest = &text[section_start..];
+        let mut section_end = text.len();
+        let mut o = 0usize;
+        for line in rest.split_inclusive('\n') {
+            if o > 0 {
+                let t = line.trim();
+                if t.starts_with('[') && t.ends_with(']') {
+                    section_end = section_start + o;
+                    break;
+                }
+            }
+            o += line.len();
+        }
         let section = &text[section_start..section_end];
-        if section.contains("enabled") {
+        let has_enabled = section
+            .lines()
+            .any(|l| l.trim_start().starts_with("enabled") && !l.trim_start().starts_with('#'));
+        if has_enabled {
             let updated = section
                 .lines()
                 .map(|line| {
                     let trimmed = line.trim_start();
-                    if trimmed.starts_with("enabled") {
+                    if trimmed.starts_with("enabled") && !trimmed.starts_with('#') {
                         let indent = &line[..line.len() - trimmed.len()];
                         format!("{indent}enabled = true")
                     } else {
@@ -731,6 +748,11 @@ fn tasks_enable(config: Option<&Path>) -> Result<()> {
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
+            let updated = if section.ends_with('\n') && !updated.ends_with('\n') {
+                format!("{updated}\n")
+            } else {
+                updated
+            };
             text.replace_range(section_start..section_end, &updated);
         } else {
             text.insert_str(section_start + "[tasks]".len(), "\nenabled = true");
@@ -856,8 +878,11 @@ sessions_dir = "{sessions}"
         assert_eq!(sc.tools[0].task_support, Some(TaskSupportHint::Optional));
         assert!(dir.join("skills/build.yaml").exists());
         let toml = fs::read_to_string(&cfg).unwrap();
-        assert!(toml.contains("[tasks]"));
-        assert!(toml.contains("enabled = true"));
+        assert!(
+            toml.lines().any(|l| l.trim() == "[tasks]"),
+            "expected real [tasks] table, got:\n{toml}"
+        );
+        assert!(toml.lines().any(|l| l.trim() == "enabled = true"));
 
         run_remove(
             Some(&cfg),

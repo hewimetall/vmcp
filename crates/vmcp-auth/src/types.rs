@@ -221,3 +221,46 @@ pub struct JwkPublicKey {
 pub fn get_param<'a>(map: &'a BTreeMap<String, String>, key: &str) -> Option<&'a str> {
     map.get(key).map(|s| s.as_str())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slugify_collapses_punctuation_and_length() {
+        assert_eq!(slugify_client_base(None), "client");
+        assert_eq!(slugify_client_base(Some("!!!")), "client");
+        assert_eq!(slugify_client_base(Some("Flow Client!!")), "flow-client");
+        let long = "A".repeat(60);
+        let slug = slugify_client_base(Some(&long));
+        assert!(slug.len() <= 48);
+        assert!(!slug.ends_with('-'));
+        // truncate that leaves only separators → fallback
+        assert_eq!(slugify_client_base(Some(&"-".repeat(60)),), "client");
+    }
+
+    #[test]
+    fn next_unique_name_increments() {
+        let mut set = std::collections::HashSet::new();
+        set.insert("cursor".into());
+        assert_eq!(next_unique_name(&set, "cursor"), "cursor-2");
+        set.insert("cursor-2".into());
+        assert_eq!(next_unique_name(&set, "cursor"), "cursor-3");
+        assert_eq!(next_unique_name(&set, "fresh"), "fresh");
+    }
+
+    #[test]
+    fn get_param_reads_map() {
+        let mut m = BTreeMap::new();
+        m.insert("a".into(), "1".into());
+        assert_eq!(get_param(&m, "a"), Some("1"));
+        assert_eq!(get_param(&m, "b"), None);
+    }
+
+    #[test]
+    fn display_name_validation() {
+        assert!(valid_client_display_name("cursor_1"));
+        assert!(!valid_client_display_name(""));
+        assert!(!valid_client_display_name("Bad Name"));
+    }
+}

@@ -58,3 +58,7 @@ jobs:
           cargo llvm-cov -p vmcp-admin --lib
           --fail-under-lines 99
           --ignore-filename-regex '(integration|ui_regression|pages)\.rs'
+      - name: vmcp-auth ≥93%
+        run: >
+          cargo llvm-cov -p vmcp-auth --lib
+          --fail-under-lines 93

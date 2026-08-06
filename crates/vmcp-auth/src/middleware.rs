@@ -225,6 +225,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn authentik_insufficient_scope_returns_forbidden() {
+        use crate::providers::authentik::{AuthentikAuth, AuthentikConfig};
+        use std::collections::BTreeMap;
+
+        let mut group_scopes = BTreeMap::new();
+        group_scopes.insert("mcp-users".into(), "mcp:use".into());
+        let facade = AuthFacade::Authentik(
+            AuthentikAuth::new(AuthentikConfig {
+                issuer: "https://auth.example/".into(),
+                jwks_url: "https://auth.example/jwks/".into(),
+                audiences: vec!["https://mcp.example/mcp".into()],
+                resource: "https://mcp.example/mcp".into(),
+                accept_bearer: false,
+                forward_auth: true,
+                group_scopes,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        let resp = app(facade)
+            .oneshot(
+                Request::builder()
+                    .uri("/mcp")
+                    .method("POST")
+                    .header("x-authentik-username", "alice")
+                    .header("x-authentik-groups", "unrelated")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert!(resp.headers().get(header::WWW_AUTHENTICATE).is_some());
+    }
+
+    #[tokio::test]
+    async fn require_admin_scope_missing_claims_is_unauthorized() {
+        // Hit require_admin_scope without require_bearer → missing claims path.
+        let bare = Router::new()
+            .route("/api/v1/ping", post(echo_client_id))
+            .layer(axum::middleware::from_fn(require_admin_scope));
+        let resp = bare
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/ping")
+                    .method("POST")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
     async fn require_admin_scope_allows_mcp_admin_rejects_mcp_use() {
         let dir = TempDir::new();
         let file = dir.path().join("tokens.json");

@@ -111,9 +111,23 @@ async fn call(
     auth: Option<&str>,
     body: Option<Value>,
 ) -> (StatusCode, Vec<(String, String)>, Vec<u8>) {
+    call_with_headers(app, method, path, auth, body, &[]).await
+}
+
+async fn call_with_headers(
+    app: axum::Router,
+    method: Method,
+    path: &str,
+    auth: Option<&str>,
+    body: Option<Value>,
+    extra: &[(&str, &str)],
+) -> (StatusCode, Vec<(String, String)>, Vec<u8>) {
     let mut builder = Request::builder().method(method).uri(path);
     if let Some(a) = auth {
         builder = builder.header(header::AUTHORIZATION, a);
+    }
+    for (k, v) in extra {
+        builder = builder.header(*k, *v);
     }
     if body.is_some() {
         builder = builder.header(header::CONTENT_TYPE, "application/json");
@@ -147,6 +161,86 @@ async fn call(
 
 fn json_body(bytes: &[u8]) -> Value {
     serde_json::from_slice(bytes).unwrap_or(Value::Null)
+}
+
+#[tokio::test]
+async fn admin_mode_none_is_open_without_credentials() {
+    use crate::AdminAuthPolicy;
+
+    let skills = TempDir::new("skills-none");
+    let sessions = TempDir::new("sessions-none");
+    let state = test_state(skills.path(), sessions.path())
+        .await
+        .with_admin_auth(AdminAuthPolicy::None);
+    let app = router(state);
+    let (st, _, body) = call(app, Method::GET, "/", None, None).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(String::from_utf8_lossy(&body).contains("admin.css"));
+    assert!(matches!(AdminAuthPolicy::default(), AdminAuthPolicy::Basic));
+}
+
+#[tokio::test]
+async fn admin_mode_authentik_headers_gate() {
+    use crate::AdminAuthPolicy;
+    use axum::http::HeaderName;
+
+    let skills = TempDir::new("skills-ak");
+    let sessions = TempDir::new("sessions-ak");
+    let state = test_state(skills.path(), sessions.path())
+        .await
+        .with_admin_auth(AdminAuthPolicy::Authentik {
+            username_header: HeaderName::from_static("x-authentik-username"),
+            groups_header: HeaderName::from_static("x-authentik-groups"),
+            required_groups: vec!["mcp-admins".into()],
+        });
+    let app = router(state);
+
+    let (st, _, _) = call(app.clone(), Method::GET, "/", None, None).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+
+    let (st, _, _) = call_with_headers(
+        app.clone(),
+        Method::GET,
+        "/",
+        None,
+        None,
+        &[
+            ("x-authentik-username", "alice"),
+            ("x-authentik-groups", "mcp-admins-extra|ops"),
+        ],
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED, "exact group match only");
+
+    let (st, _, body) = call_with_headers(
+        app,
+        Method::GET,
+        "/",
+        None,
+        None,
+        &[
+            ("x-authentik-username", "alice"),
+            ("x-authentik-groups", "ops|mcp-admins"),
+        ],
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(String::from_utf8_lossy(&body).contains("admin.css"));
+}
+
+#[tokio::test]
+async fn basic_empty_username_subject_defaults_to_admin() {
+    let skills = TempDir::new("skills-empty-user");
+    let sessions = TempDir::new("sessions-empty-user");
+    let state = test_state(skills.path(), sessions.path()).await;
+    let app = router(state);
+    // base64(":test-master-pw")
+    let auth = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(format!(":{MASTER}").as_bytes())
+    );
+    let (st, _, _) = call(app, Method::GET, "/", Some(&auth), None).await;
+    assert_eq!(st, StatusCode::OK);
 }
 
 #[tokio::test]

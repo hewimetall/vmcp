@@ -340,4 +340,208 @@ mod tests {
         let err = auth.authenticate(&headers).await.unwrap_err();
         assert_eq!(err, AuthReject::InsufficientScope);
     }
+
+    #[tokio::test]
+    async fn bearer_disabled_and_forward_disabled_requires_bearer() {
+        let auth = AuthentikAuth::new(AuthentikConfig {
+            accept_bearer: false,
+            forward_auth: false,
+            ..cfg_forward()
+        })
+        .unwrap();
+        let err = auth.authenticate(&HeaderMap::new()).await.unwrap_err();
+        assert_eq!(err, AuthReject::MissingBearer);
+    }
+
+    /// Local JWKS HTTP mock + RS256 JWT covering Authentik JWT claim/group paths.
+    async fn spawn_jwks_server(
+        jwks_json: serde_json::Value,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        use axum::{routing::get, Json, Router};
+        use tokio::net::TcpListener;
+
+        let app = Router::new().route(
+            "/jwks",
+            get(move || {
+                let body = jwks_json.clone();
+                async move { Json(body) }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{addr}/jwks"), handle)
+    }
+
+    fn sign_jwt(
+        mgr: &crate::jwks::JwksManager,
+        claims: serde_json::Value,
+    ) -> String {
+        use jsonwebtoken::{encode, Algorithm, Header};
+        let cur = mgr.current.load();
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some(cur.kid.clone());
+        encode(&header, &claims, &cur.encoding).unwrap()
+    }
+
+    #[tokio::test]
+    async fn jwt_bearer_maps_groups_and_merges_scopes() {
+        use crate::jwks::JwksManager;
+        use axum::http::header;
+
+        let mgr = JwksManager::new_with_fresh("ak-jwt").unwrap();
+        let jwks_body = serde_json::json!({ "keys": mgr.jwks() });
+        let (jwks_url, _server) = spawn_jwks_server(jwks_body).await;
+
+        let issuer = "https://auth.test/application/o/mcp/";
+        let audience = "https://mcp.test/mcp";
+        let mut group_scopes = BTreeMap::new();
+        group_scopes.insert("mcp-users".into(), "mcp:use".into());
+        group_scopes.insert("architect".into(), "upstream:architect_c4".into());
+
+        let auth = AuthentikAuth::new(AuthentikConfig {
+            issuer: issuer.into(),
+            jwks_url,
+            audiences: vec![audience.into()],
+            resource: audience.into(),
+            accept_bearer: true,
+            forward_auth: false,
+            groups_claim: "groups".into(),
+            group_scopes,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let now = Utc::now().timestamp();
+        let token = sign_jwt(
+            &mgr,
+            serde_json::json!({
+                "iss": issuer,
+                "aud": [audience, "extra-aud"],
+                "sub": "u1",
+                "preferred_username": "alice",
+                "client_id": "cursor",
+                "scope": "mcp:read",
+                "groups": ["mcp-users", "architect"],
+                "iat": now,
+                "exp": now + 3600,
+                "jti": "jti-1",
+            }),
+        );
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+        );
+        let id = auth.authenticate(&headers).await.unwrap();
+        assert_eq!(id.source, AuthSource::AuthentikJwt);
+        assert_eq!(id.subject, "alice");
+        assert_eq!(id.client_id, "cursor");
+        assert!(id.scope.contains("mcp:read"));
+        assert!(id.scope.contains("mcp:use"));
+        assert!(id.scope.contains("upstream:architect_c4"));
+        assert_eq!(id.audience, audience);
+    }
+
+    #[tokio::test]
+    async fn jwt_groups_from_string_claim_and_insufficient_scope() {
+        use crate::jwks::JwksManager;
+        use axum::http::header;
+
+        let mgr = JwksManager::new_with_fresh("ak-jwt2").unwrap();
+        let (jwks_url, _server) =
+            spawn_jwks_server(serde_json::json!({ "keys": mgr.jwks() })).await;
+        let issuer = "https://auth.test/application/o/mcp/";
+        let audience = "https://mcp.test/mcp";
+        let mut group_scopes = BTreeMap::new();
+        group_scopes.insert("mcp-users".into(), "mcp:use".into());
+
+        let auth = AuthentikAuth::new(AuthentikConfig {
+            issuer: issuer.into(),
+            jwks_url,
+            audiences: vec![audience.into()],
+            resource: audience.into(),
+            accept_bearer: true,
+            forward_auth: true,
+            groups_claim: "ak_groups".into(),
+            group_scopes,
+            ..Default::default()
+        })
+        .unwrap();
+
+        let now = Utc::now().timestamp();
+        let good = sign_jwt(
+            &mgr,
+            serde_json::json!({
+                "iss": issuer,
+                "aud": audience,
+                "sub": "u2",
+                "ak_groups": "mcp-users|other",
+                "iat": now,
+                "exp": now + 3600,
+            }),
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {good}")).unwrap(),
+        );
+        let id = auth.authenticate(&headers).await.unwrap();
+        assert_eq!(id.scope, "mcp:use");
+        assert_eq!(id.subject, "u2");
+
+        let empty = sign_jwt(
+            &mgr,
+            serde_json::json!({
+                "iss": issuer,
+                "aud": audience,
+                "sub": "u3",
+                "groups": ["unrelated"],
+                "iat": now,
+                "exp": now + 3600,
+            }),
+        );
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {empty}")).unwrap(),
+        );
+        assert_eq!(
+            auth.authenticate(&headers).await.unwrap_err(),
+            AuthReject::InsufficientScope
+        );
+
+        let bad = sign_jwt(
+            &mgr,
+            serde_json::json!({
+                "iss": "https://evil.example/",
+                "aud": audience,
+                "sub": "u4",
+                "groups": ["mcp-users"],
+                "iat": now,
+                "exp": now + 3600,
+            }),
+        );
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {bad}")).unwrap(),
+        );
+        assert_eq!(
+            auth.authenticate(&headers).await.unwrap_err(),
+            AuthReject::InvalidToken
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_header_names_rejected_at_construct() {
+        let err = AuthentikAuth::new(AuthentikConfig {
+            username_header: "bad header".into(),
+            ..cfg_forward()
+        })
+        .err()
+        .expect("invalid header name must fail");
+        assert!(err.to_string().contains("username_header"));
+    }
 }

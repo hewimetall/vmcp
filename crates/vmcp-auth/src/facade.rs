@@ -155,3 +155,128 @@ impl AuthFacade {
         Ok(Some(token))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::jwks::JwksManager;
+    use crate::providers::authentik::{AuthentikAuth, AuthentikConfig};
+    use crate::providers::local::LocalAuth;
+    use crate::state::AuthState;
+    use axum::http::HeaderValue;
+    use std::collections::BTreeMap;
+
+    const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$YWFhYWFhYWFhYWFhYWFhYQ$dG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4";
+
+    fn local_facade() -> AuthFacade {
+        let jwks = JwksManager::new_with_fresh("facade").unwrap();
+        let state = AuthState::new(jwks, "https://iss", "https://iss/mcp", 3600, DUMMY_HASH);
+        AuthFacade::Local(LocalAuth::new(state))
+    }
+
+    fn authentik_facade() -> AuthFacade {
+        let mut group_scopes = BTreeMap::new();
+        group_scopes.insert("mcp-users".into(), "mcp:use".into());
+        AuthFacade::Authentik(
+            AuthentikAuth::new(AuthentikConfig {
+                issuer: "https://auth.example/application/o/mcp/".into(),
+                jwks_url: "https://auth.example/application/o/mcp/jwks/".into(),
+                audiences: vec!["https://mcp.example/mcp".into()],
+                resource: "https://mcp.example/mcp".into(),
+                accept_bearer: false,
+                forward_auth: true,
+                group_scopes,
+                ..Default::default()
+            })
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn reject_codes_cover_all_variants() {
+        assert_eq!(AuthReject::MissingBearer.as_error_code(), "missing_bearer");
+        assert_eq!(AuthReject::EmptyBearer.as_error_code(), "empty_bearer");
+        assert_eq!(AuthReject::InvalidToken.as_error_code(), "invalid_token");
+        assert_eq!(
+            AuthReject::MissingForwardAuthHeader("x").as_error_code(),
+            "missing_forward_auth"
+        );
+        assert_eq!(
+            AuthReject::InsufficientScope.as_error_code(),
+            "insufficient_scope"
+        );
+    }
+
+    #[test]
+    fn into_claims_preserves_identity_fields() {
+        let id = AuthIdentity {
+            subject: "u".into(),
+            client_id: "c".into(),
+            scope: "mcp:use".into(),
+            groups: vec!["g".into()],
+            issuer: "iss".into(),
+            audience: "aud".into(),
+            iat: 1,
+            exp: 2,
+            jti: "j".into(),
+            source: AuthSource::LocalJwt,
+        };
+        let c = id.into_claims();
+        assert_eq!(c.sub, "u");
+        assert_eq!(c.client_id, "c");
+        assert_eq!(c.scope, "mcp:use");
+        assert_eq!(c.aud, "aud");
+    }
+
+    #[test]
+    fn local_facade_metadata_helpers() {
+        let f = local_facade();
+        assert!(f.serves_local_as());
+        assert_eq!(f.resource(), "https://iss/mcp");
+        assert_eq!(f.authorization_servers(), vec!["https://iss".to_string()]);
+        assert_eq!(f.resource_audiences(), &["https://iss/mcp".to_string()]);
+        let challenge = f.www_authenticate("missing_bearer");
+        assert!(challenge.contains("resource_metadata="));
+        assert!(challenge.contains("missing_bearer"));
+    }
+
+    #[tokio::test]
+    async fn authentik_facade_metadata_and_forward_auth() {
+        let f = authentik_facade();
+        assert!(!f.serves_local_as());
+        assert_eq!(f.resource(), "https://mcp.example/mcp");
+        assert_eq!(
+            f.authorization_servers(),
+            vec!["https://auth.example/application/o/mcp/".to_string()]
+        );
+        assert!(f
+            .www_authenticate("x")
+            .contains("https://mcp.example/mcp/.well-known/oauth-protected-resource"));
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-authentik-username", HeaderValue::from_static("alice"));
+        headers.insert("x-authentik-groups", HeaderValue::from_static("mcp-users"));
+        let id = f.authenticate(&headers).await.unwrap();
+        assert_eq!(id.source, AuthSource::AuthentikForwardAuth);
+        assert_eq!(id.scope, "mcp:use");
+    }
+
+    #[test]
+    fn bearer_token_empty_is_rejected() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer   "));
+        assert_eq!(
+            AuthFacade::bearer_token(&headers).unwrap_err(),
+            AuthReject::EmptyBearer
+        );
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Token abc"),
+        );
+        assert_eq!(AuthFacade::bearer_token(&headers).unwrap(), None);
+        assert_eq!(
+            AuthFacade::bearer_token(&HeaderMap::new()).unwrap(),
+            None
+        );
+    }
+}

@@ -80,16 +80,13 @@ pub struct UpstreamSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidecar_spec: Option<PathBuf>,
     /// Whether to spawn this upstream. Disabled entries are skipped.
-    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    /// Serde's `bool` default is `false`, so we need an explicit default fn.
+    #[serde(default = "default_true")]
     pub enabled: bool,
 }
 
 fn default_true() -> bool {
     true
-}
-
-fn is_true(v: &bool) -> bool {
-    *v
 }
 
 impl UpstreamTransport {
@@ -907,8 +904,8 @@ mod tests {
         let spec = UpstreamSpec::stdio("time", "uvx", vec!["mcp-server-time".into()]);
         let v = serde_json::to_value(&spec).unwrap();
         assert!(v.get("transport").is_none());
-        assert!(v.get("enabled").is_none());
         assert!(v.get("url").is_none());
+        assert_eq!(v["enabled"], true);
         assert_eq!(v["command"], "uvx");
     }
 }

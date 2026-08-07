@@ -901,6 +901,7 @@ fn build_namespace_object(
                 let denied = ctx
                     .data_opt::<vmcp_auth::ScopePolicy>()
                     .and_then(|p| p.authorize(&server, &tool, is_write).err());
+                let caller = ctx.data_opt::<vmcp_upstream::CallerIdentity>().cloned();
                 FieldFuture::new(async move {
                     if let Some(msg) = denied {
                         return Ok(Some(FieldValue::owned_any(ToolCallNode {
@@ -909,7 +910,7 @@ fn build_namespace_object(
                             json: Value::Null,
                         })));
                     }
-                    let res = pool.call(&server, &tool, args_json).await;
+                    let res = pool.call(&server, &tool, args_json, caller.as_ref()).await;
                     let node = match res {
                         Ok(r) => result_to_node(r, max_response_bytes, cap_mode),
                         Err(e) => ToolCallNode {

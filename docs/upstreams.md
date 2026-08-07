@@ -76,7 +76,21 @@ vmcp remove tool presentation build_presentation
 **Общие поля:** `name` (обязателен → GraphQL namespace + proxy-префикс), `description`, `transport` (`stdio` default / `http`), `enabled` (default true), `sidecar_spec`.
 
 **stdio:** `command`, `args`, `env` (`${VAR}` раскрывается), `cwd`.
-**http:** `url`, `bearer` (raw token → `Authorization: Bearer …`).
+**http:** `url`, `bearer` (raw token → `Authorization: Bearer …` — **service** credential), `forward_identity` (default `true`).
+
+### Caller identity → HTTP upstream
+
+На каждый `tools/call` (GraphQL / proxy / `run_task`) vmcp добавляет заголовки вызывающего (если auth включён и identity есть):
+
+| Header | Содержание |
+| ------ | ---------- |
+| `Authorization` | только registry `bearer` (не user JWT) |
+| `X-Vmcp-Subject` | subject |
+| `X-Vmcp-Groups` | группы через `,` |
+| `X-Vmcp-Client-Id` | client_id |
+| `X-Vmcp-Scope` | MCP scopes |
+
+Отключить на upstream: `"forward_identity": false`. Контракт: [ADR 0001](adr/0001-forward-auth-trust-and-identity-propagation.md).
 
 ```json
 {

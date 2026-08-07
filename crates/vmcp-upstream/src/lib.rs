@@ -8,7 +8,12 @@
 
 #![allow(clippy::result_large_err)]
 
+mod identity;
 mod sql_guard;
+
+pub use identity::{
+    CallerIdentity, CallerSlot, HEADER_CLIENT_ID, HEADER_GROUPS, HEADER_SCOPE, HEADER_SUBJECT,
+};
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -104,6 +109,9 @@ pub struct UpstreamSession {
     pub prompts: ArcSwap<Vec<ResolvedPrompt>>,
     /// Per-session call mutex (defence-in-depth, rmcp already serialises).
     pub call_lock: Mutex<()>,
+    /// Per-call caller identity for HTTP `X-Vmcp-*` injection (shared with
+    /// [`identity::IdentityHttpClient`]).
+    pub caller_slot: identity::CallerSlot,
     /// Last observed liveness: updated on successful/failed RPC. Advisory for
     /// `/api/v1/upstreams` + `/ready` — call paths still retry while a client
     /// handle exists.
@@ -243,6 +251,7 @@ impl UpstreamPool {
             cwd: None,
             sidecar_spec: None,
             enabled: true,
+            forward_identity: true,
         };
         let (connected, last_error, last_ok_unix_ms) = new_session_fields(true);
         let sess = UpstreamSession {
@@ -252,6 +261,7 @@ impl UpstreamPool {
             resolved: ArcSwap::from_pointee(tools),
             prompts: ArcSwap::from_pointee(vec![]),
             call_lock: Mutex::new(()),
+            caller_slot: identity::new_caller_slot(),
             connected,
             last_error,
             last_ok_unix_ms,
@@ -280,6 +290,7 @@ impl UpstreamPool {
             cwd: None,
             sidecar_spec: None,
             enabled: true,
+            forward_identity: true,
         };
         let (connected, last_error, last_ok_unix_ms) = new_session_fields(true);
         let sess = UpstreamSession {
@@ -289,6 +300,7 @@ impl UpstreamPool {
             resolved: ArcSwap::from_pointee(tools),
             prompts: ArcSwap::from_pointee(prompts),
             call_lock: Mutex::new(()),
+            caller_slot: identity::new_caller_slot(),
             connected,
             last_error,
             last_ok_unix_ms,
@@ -387,7 +399,18 @@ impl UpstreamPool {
 
     /// Call an upstream tool. Returns the rmcp `CallToolResult` or an error if
     /// the upstream is gone / timed out. Updates per-session status on outcome.
-    pub async fn call(&self, server: &str, tool: &str, args: Value) -> Result<CallToolResult> {
+    ///
+    /// When `caller` is set and the upstream has `forward_identity` (default),
+    /// HTTP transports attach `X-Vmcp-Subject` / `X-Vmcp-Groups` / …
+    /// for the duration of this call (serialized by `call_lock`). Registry
+    /// `bearer` remains the service `Authorization` credential.
+    pub async fn call(
+        &self,
+        server: &str,
+        tool: &str,
+        args: Value,
+        caller: Option<&CallerIdentity>,
+    ) -> Result<CallToolResult> {
         let sess = self
             .sessions
             .get(server)
@@ -396,6 +419,26 @@ impl UpstreamPool {
 
         let _guard = sess.call_lock.lock().await;
 
+        let forward = sess.spec.load().forward_identity;
+        if forward {
+            if let Some(c) = caller {
+                sess.caller_slot.store(Arc::new(Some(c.clone())));
+            }
+        }
+        let result = self.call_locked(&sess, server, tool, args).await;
+        if forward {
+            sess.caller_slot.store(Arc::new(None));
+        }
+        result
+    }
+
+    async fn call_locked(
+        &self,
+        sess: &UpstreamSession,
+        server: &str,
+        tool: &str,
+        args: Value,
+    ) -> Result<CallToolResult> {
         let args_obj = match args {
             Value::Null => None,
             Value::Object(m) => Some(m),
@@ -788,8 +831,15 @@ pub fn spec_requires_respawn(a: &UpstreamSpec, b: &UpstreamSpec) -> bool {
 type UpstreamClient = RunningService<RoleClient, ForwardingClient>;
 
 /// Connect to one upstream (stdio or HTTP) and complete the MCP handshake.
-async fn connect_upstream(spec: &UpstreamSpec, bus: Arc<Bus>) -> Result<UpstreamClient> {
+///
+/// Returns the running client plus the caller-identity slot shared with the
+/// HTTP transport (stdio gets an unused slot for a uniform session shape).
+async fn connect_upstream(
+    spec: &UpstreamSpec,
+    bus: Arc<Bus>,
+) -> Result<(UpstreamClient, identity::CallerSlot)> {
     let handler = ForwardingClient::new(spec.name.clone(), bus);
+    let caller_slot = identity::new_caller_slot();
 
     match spec.transport {
         vmcp_registry::UpstreamTransport::Http => {
@@ -799,11 +849,13 @@ async fn connect_upstream(spec: &UpstreamSpec, bus: Arc<Bus>) -> Result<Upstream
             if let Some(token) = &spec.bearer {
                 config = config.auth_header(token.clone());
             }
-            let transport = StreamableHttpClientTransport::from_config(config);
-            handler
+            let http = identity::IdentityHttpClient::new(caller_slot.clone())?;
+            let transport = StreamableHttpClientTransport::with_client(http, config);
+            let client = handler
                 .serve(transport)
                 .await
-                .context("MCP handshake with http upstream")
+                .context("MCP handshake with http upstream")?;
+            Ok((client, caller_slot))
         }
         vmcp_registry::UpstreamTransport::Stdio => {
             debug!(name = %spec.name, command = %spec.command, args = ?spec.args, "spawning upstream");
@@ -814,10 +866,11 @@ async fn connect_upstream(spec: &UpstreamSpec, bus: Arc<Bus>) -> Result<Upstream
             }
             cmd.kill_on_drop(true);
             let transport = TokioChildProcess::new(cmd).context("spawn child process")?;
-            handler
+            let client = handler
                 .serve(transport)
                 .await
-                .context("MCP handshake with upstream")
+                .context("MCP handshake with upstream")?;
+            Ok((client, caller_slot))
         }
     }
 }
@@ -840,7 +893,7 @@ fn cached_tools_from_live(live_tools: &[Tool]) -> Vec<CachedTool> {
 /// generate `specs/<server>.json` without keeping a long-lived pool session.
 pub async fn probe_upstream_tools(spec: UpstreamSpec) -> Result<Vec<CachedTool>> {
     let bus = Bus::new(16);
-    let client = connect_upstream(&spec, bus).await?;
+    let (client, _slot) = connect_upstream(&spec, bus).await?;
     let live_tools = client
         .list_all_tools()
         .await
@@ -856,7 +909,7 @@ pub async fn spawn_one(
     bus: Arc<Bus>,
     spec_dir: Option<&std::path::Path>,
 ) -> Result<UpstreamSession> {
-    let client = connect_upstream(&spec, bus).await?;
+    let (client, caller_slot) = connect_upstream(&spec, bus).await?;
 
     let live_tools = client
         .list_all_tools()
@@ -902,6 +955,7 @@ pub async fn spawn_one(
         resolved: ArcSwap::from_pointee(resolved),
         prompts: ArcSwap::from_pointee(resolved_prompts),
         call_lock: Mutex::new(()),
+        caller_slot,
         connected,
         last_error,
         last_ok_unix_ms,
@@ -1139,6 +1193,7 @@ mod status_tests {
             cwd: None,
             sidecar_spec: None,
             enabled: true,
+            forward_identity: true,
         };
         let mut b = a.clone();
         assert!(!spec_requires_respawn(&a, &b));

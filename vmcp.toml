@@ -61,6 +61,9 @@ clients_db_path  = "./state/clients.db"
 # audiences = ["https://architecture.mcpwork.space/mcp"]
 # accept_bearer = true
 # forward_auth = true
+# # Required when forward_auth: trusted_proxies and/or forward_auth_secret
+# trusted_proxies = ["10.244.0.0/16"]
+# # forward_auth_secret via VMCP_AUTH__AUTHENTIK__FORWARD_AUTH_SECRET
 # group_scopes = { "mcp-users" = "mcp:use", "mcp-admins" = "mcp:admin" }
 
 [recorder]

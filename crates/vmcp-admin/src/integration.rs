@@ -192,6 +192,12 @@ async fn admin_mode_authentik_headers_gate() {
             username_header: HeaderName::from_static("x-authentik-username"),
             groups_header: HeaderName::from_static("x-authentik-groups"),
             required_groups: vec!["mcp-admins".into()],
+            trust: vmcp_auth::ForwardAuthTrust::new(
+                &["127.0.0.1/32".into()],
+                "",
+                "x-vmcp-forward-auth",
+            )
+            .unwrap(),
         });
     let app = router(state);
 

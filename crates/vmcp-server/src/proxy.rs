@@ -118,8 +118,9 @@ impl ServerHandler for ProxyServer {
             None => Value::Null,
         };
 
+        let caller = crate::caller_identity_from_request_context(&ctx);
         self.pool
-            .call(server, tool, args)
+            .call(server, tool, args, caller.as_ref())
             .await
             .map(Into::into)
             .map_err(|e| {

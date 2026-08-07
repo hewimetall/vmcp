@@ -103,6 +103,7 @@ fn upstream(name: &str, exe: &str, sidecar: std::path::PathBuf) -> UpstreamSpec 
         cwd: None,
         sidecar_spec: Some(sidecar),
         enabled: true,
+        forward_identity: true,
     }
 }
 

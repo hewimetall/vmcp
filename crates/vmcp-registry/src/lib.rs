@@ -83,6 +83,11 @@ pub struct UpstreamSpec {
     /// Serde's `bool` default is `false`, so we need an explicit default fn.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Forward authenticated caller identity (`X-Vmcp-Subject` / `X-Vmcp-Groups`)
+    /// on HTTP upstream tool calls. Default true. Registry `bearer` remains the
+    /// service credential on `Authorization`.
+    #[serde(default = "default_true")]
+    pub forward_identity: bool,
 }
 
 fn default_true() -> bool {
@@ -110,6 +115,7 @@ impl UpstreamSpec {
             cwd: None,
             sidecar_spec: None,
             enabled: true,
+            forward_identity: true,
         }
     }
 
@@ -127,6 +133,7 @@ impl UpstreamSpec {
             cwd: None,
             sidecar_spec: None,
             enabled: true,
+            forward_identity: true,
         }
     }
 }

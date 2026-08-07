@@ -50,42 +50,85 @@ pub struct UpstreamSpec {
     /// Operator-authored description shown via `Query.servers.description`.
     /// Lets agents pick the right upstream by purpose before reaching for
     /// `search(q)` — e.g. "WORK for JIRA — read & write issues".
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// How to reach this upstream. Defaults to `stdio`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "UpstreamTransport::is_stdio")]
     pub transport: UpstreamTransport,
     /// Streamable-HTTP endpoint URL (required when `transport = "http"`),
     /// e.g. `http://127.0.0.1:8080/mcp`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     /// Bearer token sent as `Authorization: Bearer <token>` to an HTTP
     /// upstream. The raw token only — vmcp/rmcp adds the `Bearer ` prefix.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bearer: Option<String>,
     /// Executable to spawn (stdio transport). Ignored for HTTP upstreams.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub command: String,
     /// Arguments passed to `command`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
     /// Environment variables for the child process.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
     /// Working directory for the child process. None = inherit.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
     /// Path to a sidecar JSON with `readOnlyHint` overrides for tools whose
     /// upstream annotation is missing or wrong.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidecar_spec: Option<PathBuf>,
     /// Whether to spawn this upstream. Disabled entries are skipped.
+    /// Serde's `bool` default is `false`, so we need an explicit default fn.
     #[serde(default = "default_true")]
     pub enabled: bool,
 }
 
 fn default_true() -> bool {
     true
+}
+
+impl UpstreamTransport {
+    fn is_stdio(&self) -> bool {
+        matches!(self, Self::Stdio)
+    }
+}
+
+impl UpstreamSpec {
+    /// Build a stdio upstream (`command` + `args`).
+    pub fn stdio(name: impl Into<String>, command: impl Into<String>, args: Vec<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: None,
+            transport: UpstreamTransport::Stdio,
+            url: None,
+            bearer: None,
+            command: command.into(),
+            args,
+            env: BTreeMap::new(),
+            cwd: None,
+            sidecar_spec: None,
+            enabled: true,
+        }
+    }
+
+    /// Build an HTTP upstream (`url`, optional bearer).
+    pub fn http(name: impl Into<String>, url: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            description: None,
+            transport: UpstreamTransport::Http,
+            url: Some(url.into()),
+            bearer: None,
+            command: String::new(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            cwd: None,
+            sidecar_spec: None,
+            enabled: true,
+        }
+    }
 }
 
 /// Optional per-tool sidecar override file: `specs/<server>.json`.
@@ -103,12 +146,12 @@ pub struct SidecarTool {
     #[serde(default)]
     pub read_only: bool,
     /// Optional override description (rarely needed).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Override for upstream `execution.taskSupport`. When set, controls whether
     /// the tool appears on vmcp's `run_task` allowlist (`optional`/`required`).
     /// `forbidden` (or omitting with upstream also forbidden) keeps it GraphQL-only.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_support: Option<TaskSupportHint>,
 }
 
@@ -194,6 +237,29 @@ pub enum RegistryError {
     Env(String),
     #[error("duplicate upstream name: {0}")]
     DuplicateName(String),
+    #[error("unknown upstream name: {0}")]
+    UnknownName(String),
+    #[error("invalid upstream name: {0}")]
+    InvalidName(String),
+}
+
+/// Validate an upstream `name`: non-empty, ≤64 chars, `[A-Za-z0-9_-]+`.
+/// Same charset as `upstream:<name>` scope tokens.
+pub fn validate_upstream_name(name: &str) -> Result<(), RegistryError> {
+    if name.is_empty() || name.len() > 64 {
+        return Err(RegistryError::InvalidName(
+            "must be 1..=64 characters".into(),
+        ));
+    }
+    if !name
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err(RegistryError::InvalidName(
+            "use only A-Za-z0-9_- (GraphQL / scope identifier)".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Expand `${VAR}` / `$VAR` placeholders from the process environment.
@@ -249,6 +315,13 @@ pub fn expand_env(input: &str) -> Result<String, RegistryError> {
     Ok(out)
 }
 
+/// Expand `${ENV}` in `url` / `bearer` / `env` on a clone (CLI probe path).
+pub fn expand_upstream_spec(spec: &UpstreamSpec) -> Result<UpstreamSpec, RegistryError> {
+    let mut out = spec.clone();
+    expand_upstream(&mut out)?;
+    Ok(out)
+}
+
 fn expand_upstream(spec: &mut UpstreamSpec) -> Result<(), RegistryError> {
     if let Some(url) = spec.url.as_mut() {
         *url = expand_env(url)?;
@@ -290,13 +363,12 @@ fn reject_duplicate_names(registry: &Registry) -> Result<(), RegistryError> {
     Ok(())
 }
 
-/// Load the registry JSON. Returns an empty registry if the file is absent —
-/// vmcp can boot with no upstreams (useful for OAuth-only deploys).
+/// Load registry JSON from disk **without** expanding `${ENV}` placeholders.
+/// Use this for CLI edit/list so secrets stay as `${VAR}` on round-trip.
 ///
-/// After parse, expands `${ENV}` placeholders in each upstream's `url`,
-/// `bearer`, and `env` values. Duplicate `name`s are rejected. Missing env
-/// vars in placeholders are a hard error.
-pub fn load_registry(path: &Path) -> Result<Registry, RegistryError> {
+/// Returns an empty registry if the file is absent. Duplicate `name`s are
+/// rejected.
+pub fn load_registry_raw(path: &Path) -> Result<Registry, RegistryError> {
     if !path.exists() {
         tracing::warn!(
             ?path,
@@ -305,12 +377,90 @@ pub fn load_registry(path: &Path) -> Result<Registry, RegistryError> {
         return Ok(Registry::default());
     }
     let text = fs::read_to_string(path)?;
-    let mut registry: Registry = serde_json::from_str(&text)?;
+    let registry: Registry = serde_json::from_str(&text)?;
     reject_duplicate_names(&registry)?;
+    Ok(registry)
+}
+
+/// Load the registry JSON. Returns an empty registry if the file is absent —
+/// vmcp can boot with no upstreams (useful for OAuth-only deploys).
+///
+/// After parse, expands `${ENV}` placeholders in each upstream's `url`,
+/// `bearer`, and `env` values. Duplicate `name`s are rejected. Missing env
+/// vars in placeholders are a hard error.
+pub fn load_registry(path: &Path) -> Result<Registry, RegistryError> {
+    let mut registry = load_registry_raw(path)?;
     for upstream in &mut registry.upstreams {
         expand_upstream(upstream)?;
     }
     Ok(registry)
+}
+
+/// Atomic write of `registry.json`: `<path>.tmp` → backup → rename.
+/// Does **not** expand env — writes the in-memory specs as-is (CLI round-trip).
+pub fn save_registry_atomic(path: &Path, registry: &Registry) -> Result<(), RegistryError> {
+    reject_duplicate_names(registry)?;
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let tmp = path.with_extension("json.tmp");
+    let bak = path.with_extension("json.bak");
+    let text = serde_json::to_string_pretty(registry)?;
+    fs::write(&tmp, format!("{text}\n"))?;
+    if path.exists() {
+        let _ = fs::rename(path, &bak);
+    }
+    fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// Append an upstream. Errors on invalid / duplicate name or cap overflow.
+pub fn add_upstream(registry: &mut Registry, spec: UpstreamSpec) -> Result<(), RegistryError> {
+    validate_upstream_name(&spec.name)?;
+    if registry.upstreams.iter().any(|u| u.name == spec.name) {
+        return Err(RegistryError::DuplicateName(spec.name));
+    }
+    if registry.upstreams.len() >= MAX_UPSTREAMS {
+        return Err(RegistryError::Env(format!(
+            "too many upstreams ({}); max is {MAX_UPSTREAMS}",
+            registry.upstreams.len()
+        )));
+    }
+    match spec.transport {
+        UpstreamTransport::Http => {
+            if spec.url.as_deref().unwrap_or("").is_empty() {
+                return Err(RegistryError::Env(
+                    "http upstream requires a non-empty url".into(),
+                ));
+            }
+        }
+        UpstreamTransport::Stdio => {
+            if spec.command.is_empty() {
+                return Err(RegistryError::Env(
+                    "stdio upstream requires a command".into(),
+                ));
+            }
+        }
+    }
+    registry.upstreams.push(spec);
+    Ok(())
+}
+
+/// Remove an upstream by name. Errors if missing.
+pub fn remove_upstream(registry: &mut Registry, name: &str) -> Result<UpstreamSpec, RegistryError> {
+    let idx = registry
+        .upstreams
+        .iter()
+        .position(|u| u.name == name)
+        .ok_or_else(|| RegistryError::UnknownName(name.to_string()))?;
+    Ok(registry.upstreams.remove(idx))
+}
+
+/// Look up an upstream by name.
+pub fn get_upstream<'a>(registry: &'a Registry, name: &str) -> Option<&'a UpstreamSpec> {
+    registry.upstreams.iter().find(|u| u.name == name)
 }
 
 /// Load the lock file. Returns None if absent (first boot).
@@ -351,6 +501,76 @@ pub fn load_sidecar(path: Option<&Path>) -> Result<Option<SidecarSpec>, Registry
             Ok(Some(spec))
         }
         _ => Ok(None),
+    }
+}
+
+/// Atomic write of a sidecar JSON (`specs/<server>.json`).
+pub fn save_sidecar_atomic(path: &Path, spec: &SidecarSpec) -> Result<(), RegistryError> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
+    let tmp = path.with_extension("json.tmp");
+    let bak = path.with_extension("json.bak");
+    let text = serde_json::to_string_pretty(spec)?;
+    fs::write(&tmp, format!("{text}\n"))?;
+    if path.exists() {
+        let _ = fs::rename(path, &bak);
+    }
+    fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// Insert or replace a tool override in a sidecar (by tool name).
+pub fn upsert_sidecar_tool(spec: &mut SidecarSpec, tool: SidecarTool) {
+    if let Some(existing) = spec.tools.iter_mut().find(|t| t.name == tool.name) {
+        *existing = tool;
+    } else {
+        spec.tools.push(tool);
+    }
+    spec.tools.sort_by(|a, b| a.name.cmp(&b.name));
+}
+
+/// Remove a tool override by name. Returns the removed entry.
+pub fn remove_sidecar_tool(
+    spec: &mut SidecarSpec,
+    tool_name: &str,
+) -> Result<SidecarTool, RegistryError> {
+    let idx = spec
+        .tools
+        .iter()
+        .position(|t| t.name == tool_name)
+        .ok_or_else(|| RegistryError::UnknownName(format!("tool `{tool_name}`")))?;
+    Ok(spec.tools.remove(idx))
+}
+
+/// Default on-disk name for a server's sidecar under `spec_dir`.
+pub fn sidecar_filename(server: &str) -> String {
+    format!("{server}.json")
+}
+
+/// Build a sidecar from a live `tools/list` snapshot (CLI `add mcp` codegen).
+///
+/// `task_support = forbidden` is omitted (sidecar default); descriptions are
+/// kept when present so operators can skim the file.
+pub fn sidecar_from_cached_tools(server: &str, tools: &[CachedTool]) -> SidecarSpec {
+    let mut tools: Vec<SidecarTool> = tools
+        .iter()
+        .map(|t| SidecarTool {
+            name: t.name.clone(),
+            read_only: t.read_only,
+            description: t.description.clone(),
+            task_support: match t.task_support {
+                TaskSupportHint::Forbidden => None,
+                other => Some(other),
+            },
+        })
+        .collect();
+    tools.sort_by(|a, b| a.name.cmp(&b.name));
+    SidecarSpec {
+        server: server.to_string(),
+        tools,
     }
 }
 
@@ -715,5 +935,81 @@ mod tests {
             task_support: TaskSupportHint::Optional,
         }];
         assert!(detect_drift(&stored, &live));
+    }
+
+    #[test]
+    fn validate_upstream_name_charset() {
+        assert!(validate_upstream_name("time").is_ok());
+        assert!(validate_upstream_name("architect_c4").is_ok());
+        assert!(validate_upstream_name("my-server").is_ok());
+        assert!(validate_upstream_name("").is_err());
+        assert!(validate_upstream_name("has space").is_err());
+        assert!(validate_upstream_name("bad.name").is_err());
+    }
+
+    #[test]
+    fn add_remove_upstream_round_trip_preserves_env_placeholders() {
+        let path = tmp_path("reg-cli");
+        let mut reg = Registry::default();
+        let mut spec = UpstreamSpec::http("ctx", "https://mcp.example.com/${API_KEY}/mcp");
+        spec.bearer = Some("${API_KEY}".into());
+        add_upstream(&mut reg, spec).unwrap();
+        save_registry_atomic(&path, &reg).unwrap();
+
+        let loaded = load_registry_raw(&path).unwrap();
+        assert_eq!(
+            loaded.upstreams[0].url.as_deref(),
+            Some("https://mcp.example.com/${API_KEY}/mcp")
+        );
+        assert_eq!(loaded.upstreams[0].bearer.as_deref(), Some("${API_KEY}"));
+
+        remove_upstream(&mut reg, "ctx").unwrap();
+        assert!(get_upstream(&reg, "ctx").is_none());
+        assert!(matches!(
+            add_upstream(&mut reg, UpstreamSpec::http("ctx", "http://x")),
+            Ok(())
+        ));
+        assert!(matches!(
+            add_upstream(&mut reg, UpstreamSpec::http("ctx", "http://y")),
+            Err(RegistryError::DuplicateName(_))
+        ));
+        cleanup(&[path]);
+    }
+
+    #[test]
+    fn serialize_skips_stdio_defaults() {
+        let spec = UpstreamSpec::stdio("time", "uvx", vec!["mcp-server-time".into()]);
+        let v = serde_json::to_value(&spec).unwrap();
+        assert!(v.get("transport").is_none());
+        assert!(v.get("url").is_none());
+        assert_eq!(v["enabled"], true);
+        assert_eq!(v["command"], "uvx");
+    }
+
+    #[test]
+    fn sidecar_from_cached_tools_omits_forbidden_task() {
+        let tools = vec![
+            CachedTool {
+                name: "read".into(),
+                description: Some("r".into()),
+                input_schema: json!({}),
+                read_only: true,
+                task_support: TaskSupportHint::Forbidden,
+            },
+            CachedTool {
+                name: "build".into(),
+                description: None,
+                input_schema: json!({}),
+                read_only: false,
+                task_support: TaskSupportHint::Optional,
+            },
+        ];
+        let sc = sidecar_from_cached_tools("p", &tools);
+        assert_eq!(sc.server, "p");
+        assert_eq!(sc.tools.len(), 2);
+        assert_eq!(sc.tools[0].name, "build"); // sorted
+        assert_eq!(sc.tools[0].task_support, Some(TaskSupportHint::Optional));
+        assert_eq!(sc.tools[1].task_support, None);
+        assert!(sc.tools[1].read_only);
     }
 }

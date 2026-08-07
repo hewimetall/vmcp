@@ -38,7 +38,25 @@ Env: `VMCP_REGISTRY_PATH`, `VMCP_SPEC_DIR`, `VMCP_LOCK_PATH`, `VMCP_SKILLS_DIR`,
 
 ## 1. Upstream-сервисы (`registry.json`)
 
-Правится вручную. Нет файла → пустой пул (шлюз стартует). Единственный ключ списка — **`upstreams`** (legacy `servers` в 1.0 = ошибка парсинга).
+Правится вручную или через CLI:
+
+```bash
+vmcp init                                      # vmcp.toml + пустой registry.json + dirs
+vmcp add mcp --transport http notion https://mcp.notion.com/mcp
+vmcp add mcp --bearer '${API_KEY}' --transport http secure https://api.example.com/mcp
+vmcp add mcp --transport stdio time -- uvx mcp-server-time
+# ↑ connect + tools/list → пишет specs/<name>.json и sidecar_spec (или --no-spec)
+vmcp add tool presentation build_presentation --task-support optional   # ручной upsert
+vmcp add skill search_docs --description 'docs' --template 'Call query_graphql…'
+vmcp add tasks                                 # [tasks] enabled = true в vmcp.toml
+vmcp list mcp|tool|skill
+vmcp get mcp time
+vmcp remove tool presentation build_presentation
+```
+
+`vmcp mcp add …` — алиас на `vmcp add mcp …`. Опции (`--transport`, `--env`, `--bearer`, …) — **до** имени сервера; для stdio команда и args — после `--`. Пути из `--config` / `VMCP_CONFIG`. `${ENV}` в registry не раскрываются при записи; для probe env должен быть задан (иначе `--no-spec`). Sidecar: автоген из `tools/list` или ручной `add tool`.
+
+Нет файла → пустой пул (шлюз стартует). Единственный ключ списка — **`upstreams`** (legacy `servers` в 1.0 = ошибка парсинга).
 
 ```json
 {
@@ -186,12 +204,12 @@ Default в коде `false`; в поставляемом `vmcp.toml` demo proxy 
 
 ## Чеклист: новый upstream end-to-end
 
-1. **Сервис** — запись в `registry.json` (`stdio`/`http`)
+1. **Сервис** — `vmcp mcp add …` или ручная запись в `registry.json` (`stdio`/`http`)
 2. **Sidecar** (опц.) — `specs/<name>.json` + `sidecar_spec`
 3. **Skills** (опц.) — YAML, учит агента GraphQL-форме сервера
 4. **Proxy** (опц.) — `[proxy] enabled = true` для `{server}__*` tools/prompts
 5. **Tasks** (опц.) — `task_support` на долгих + `[tasks]` ([tasks.md](tasks.md))
-6. Рестарт + проверка:
+6. Рестарт (или hot-reload registry) + проверка:
 
 ```bash
 curl -fsS http://127.0.0.1:8765/health

@@ -251,7 +251,7 @@ impl UpstreamPool {
             cwd: None,
             sidecar_spec: None,
             enabled: true,
-            forward_identity: true,
+            forward_identity: false,
         };
         let (connected, last_error, last_ok_unix_ms) = new_session_fields(true);
         let sess = UpstreamSession {
@@ -290,7 +290,7 @@ impl UpstreamPool {
             cwd: None,
             sidecar_spec: None,
             enabled: true,
-            forward_identity: true,
+            forward_identity: false,
         };
         let (connected, last_error, last_ok_unix_ms) = new_session_fields(true);
         let sess = UpstreamSession {
@@ -400,10 +400,11 @@ impl UpstreamPool {
     /// Call an upstream tool. Returns the rmcp `CallToolResult` or an error if
     /// the upstream is gone / timed out. Updates per-session status on outcome.
     ///
-    /// When `caller` is set and the upstream has `forward_identity` (default),
-    /// HTTP transports attach `X-Vmcp-Subject` / `X-Vmcp-Groups` / …
-    /// for the duration of this call (serialized by `call_lock`). Registry
-    /// `bearer` remains the service `Authorization` credential.
+    /// When `caller` is set and the upstream has `forward_identity = true`
+    /// (opt-in for internal adapters), HTTP transports attach
+    /// `X-Vmcp-Subject` / `X-Vmcp-Groups` / … for the duration of this call
+    /// (serialized by `call_lock`). Registry `bearer` remains the service
+    /// `Authorization` credential. External SaaS keep the default `false`.
     pub async fn call(
         &self,
         server: &str,
@@ -1193,7 +1194,7 @@ mod status_tests {
             cwd: None,
             sidecar_spec: None,
             enabled: true,
-            forward_identity: true,
+            forward_identity: false,
         };
         let mut b = a.clone();
         assert!(!spec_requires_respawn(&a, &b));

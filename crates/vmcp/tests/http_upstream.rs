@@ -98,7 +98,7 @@ async fn http_upstream_discovers_and_calls() {
             cwd: None,
             sidecar_spec: None,
             enabled: true,
-            forward_identity: true,
+            forward_identity: false,
         }],
     };
     let bus = Bus::new(1024);

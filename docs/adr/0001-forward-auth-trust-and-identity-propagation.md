@@ -24,9 +24,18 @@ If both are set, **both** must pass (AND). If neither is set, config load / `Aut
 
 Bearer JWT path is unchanged (signature + audience verify). The same hop trust gates `/admin` when `auth.admin.mode = authentik`.
 
-### Defect 2 — Identity forwarding on HTTP upstream calls
+### Defect 2 — Identity forwarding on HTTP upstream calls (opt-in)
 
-On every `tools/call` to an HTTP upstream (when `forward_identity` is true, the default):
+Operators mix **external** SaaS MCP servers and **internal** adapters. Identity
+headers must not leak to the public internet by default.
+
+`forward_identity` is **per-upstream**, default **`false`**:
+
+- External (Notion, Context7, …): leave off.
+- Internal (`stand-api-mcp`, …): set `"forward_identity": true` or
+  `vmcp add mcp --forward-identity …`.
+
+When enabled, on every `tools/call` to that HTTP upstream:
 
 | Header | Value |
 | ------ | ----- |
@@ -36,9 +45,10 @@ On every `tools/call` to an HTTP upstream (when `forward_identity` is true, the 
 | `X-Vmcp-Client-Id` | Client / username |
 | `X-Vmcp-Scope` | Resolved MCP scopes |
 
-Identity is stored in a per-session slot under the existing `call_lock` and injected by an identity-aware Streamable HTTP client — concurrent GraphQL aliases cannot cross-contaminate.
-
-Opt out per upstream: `"forward_identity": false` in `registry.json`.
+vmcp asserts these headers **after** its own auth (JWT / trusted hop) — they
+are not client-forged ingress headers (that is Defect 1). Identity is stored in
+a per-session slot under `call_lock` and injected by an identity-aware
+Streamable HTTP client.
 
 Stdio upstreams do not receive HTTP headers (no change).
 

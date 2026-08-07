@@ -111,6 +111,10 @@ pub enum AddCommand {
         /// Skip connect/`tools/list` — do not generate `specs/<name>.json`.
         #[arg(long)]
         no_spec: bool,
+        /// Opt-in: send `X-Vmcp-Subject` / `X-Vmcp-Groups` on HTTP tool calls.
+        /// For **internal** adapters only; leave off for external SaaS.
+        #[arg(long)]
+        forward_identity: bool,
         name: String,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         rest: Vec<String>,
@@ -192,6 +196,9 @@ pub enum McpCommand {
         cwd: Option<PathBuf>,
         #[arg(long)]
         no_spec: bool,
+        /// Opt-in identity headers for internal HTTP adapters (see `add mcp`).
+        #[arg(long)]
+        forward_identity: bool,
         name: String,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         rest: Vec<String>,
@@ -262,6 +269,7 @@ pub async fn run_add(config: Option<&Path>, cmd: AddCommand) -> Result<()> {
             description,
             cwd,
             no_spec,
+            forward_identity,
             name,
             rest,
         } => {
@@ -275,6 +283,7 @@ pub async fn run_add(config: Option<&Path>, cmd: AddCommand) -> Result<()> {
                 description,
                 cwd,
                 no_spec,
+                forward_identity,
             )
             .await
         }
@@ -341,6 +350,7 @@ pub async fn run_mcp(config: Option<&Path>, cmd: McpCommand) -> Result<()> {
             description,
             cwd,
             no_spec,
+            forward_identity,
             name,
             rest,
         } => {
@@ -353,6 +363,7 @@ pub async fn run_mcp(config: Option<&Path>, cmd: McpCommand) -> Result<()> {
                     description,
                     cwd,
                     no_spec,
+                    forward_identity,
                     name,
                     rest,
                 },
@@ -376,6 +387,7 @@ async fn mcp_add(
     description: Option<String>,
     cwd: Option<PathBuf>,
     no_spec: bool,
+    forward_identity: bool,
 ) -> Result<()> {
     if matches!(transport, CliTransport::Http) {
         if !env_pairs.is_empty() {
@@ -422,6 +434,10 @@ async fn mcp_add(
         }
     };
     spec.description = description;
+    spec.forward_identity = forward_identity;
+    if forward_identity && !matches!(transport, CliTransport::Http) {
+        eprintln!("warning: --forward-identity only applies to HTTP upstreams (stdio ignores it)");
+    }
 
     let cfg = load_cfg(config)?;
     let path = &cfg.registry_path;
@@ -469,6 +485,12 @@ async fn mcp_add(
         );
     } else {
         eprintln!("hint: vmcp add tool {name} <tool> [--read-only] [--task-support optional]");
+    }
+    if forward_identity {
+        eprintln!(
+            "forward_identity=true → HTTP tools/call will send X-Vmcp-Subject/Groups \
+             (internal adapters only)"
+        );
     }
     Ok(())
 }
@@ -895,6 +917,7 @@ sessions_dir = "{sessions}"
                 description: None,
                 cwd: None,
                 no_spec: true,
+                forward_identity: false,
                 name: "presentation".into(),
                 rest: vec!["uvx".into(), "mcp-presentation".into()],
             },
@@ -927,6 +950,7 @@ sessions_dir = "{sessions}"
         run_add(Some(&cfg), AddCommand::Tasks).await.unwrap();
 
         let reg = load_registry_raw(&dir.join("registry.json")).unwrap();
+        assert!(!reg.upstreams[0].forward_identity);
         assert_eq!(
             reg.upstreams[0].sidecar_spec.as_deref(),
             Some(Path::new("presentation.json"))
@@ -987,6 +1011,7 @@ sessions_dir = "{sessions}"
                 description: None,
                 cwd: None,
                 no_spec: true,
+                forward_identity: false,
                 name: "notion".into(),
                 rest: vec!["https://mcp.notion.com/mcp".into()],
             },
@@ -995,6 +1020,33 @@ sessions_dir = "{sessions}"
         .unwrap();
         let reg = load_registry_raw(&dir.join("registry.json")).unwrap();
         assert_eq!(reg.upstreams[0].name, "notion");
+        assert!(!reg.upstreams[0].forward_identity);
+
+        // Internal adapter: opt-in identity forwarding.
+        run_add(
+            Some(&cfg),
+            AddCommand::Mcp {
+                transport: CliTransport::Http,
+                env: vec![],
+                bearer: None,
+                description: Some("cluster stand adapter".into()),
+                cwd: None,
+                no_spec: true,
+                forward_identity: true,
+                name: "stand_api".into(),
+                rest: vec!["http://stand-api.internal/mcp".into()],
+            },
+        )
+        .await
+        .unwrap();
+        let reg = load_registry_raw(&dir.join("registry.json")).unwrap();
+        let stand = reg
+            .upstreams
+            .iter()
+            .find(|u| u.name == "stand_api")
+            .unwrap();
+        assert!(stand.forward_identity);
+
         let _ = fs::remove_dir_all(&dir);
     }
 }

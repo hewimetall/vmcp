@@ -151,8 +151,10 @@ async fn http_upstream_forwards_caller_identity_headers() {
     use std::sync::Mutex;
     use vmcp_upstream::{CallerIdentity, HEADER_GROUPS, HEADER_SUBJECT};
 
-    let seen: Arc<Mutex<Vec<(Option<String>, Option<String>, Option<String>)>>> =
-        Arc::new(Mutex::new(Vec::new()));
+    /// (subject, groups, authorization) snapshots from inbound HTTP.
+    type SeenHeaders = Arc<Mutex<Vec<(Option<String>, Option<String>, Option<String>)>>>;
+
+    let seen: SeenHeaders = Arc::new(Mutex::new(Vec::new()));
     let seen_mw = seen.clone();
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -169,11 +171,7 @@ async fn http_upstream_forwards_caller_identity_headers() {
         config,
     );
 
-    async fn capture(
-        seen: Arc<Mutex<Vec<(Option<String>, Option<String>, Option<String>)>>>,
-        req: Request<Body>,
-        next: Next,
-    ) -> Response {
+    async fn capture(seen: SeenHeaders, req: Request<Body>, next: Next) -> Response {
         let subject = req
             .headers()
             .get(HEADER_SUBJECT)

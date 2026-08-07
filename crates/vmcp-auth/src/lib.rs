@@ -12,6 +12,7 @@
 
 pub mod client_store;
 pub mod facade;
+pub mod forward_trust;
 pub mod groups;
 pub mod jwks;
 pub mod middleware;
@@ -26,6 +27,7 @@ pub mod tokens;
 pub mod types;
 
 pub use facade::{AuthFacade, AuthIdentity, AuthReject, AuthSource};
+pub use forward_trust::ForwardAuthTrust;
 pub use groups::{group_contains, scopes_from_groups, split_groups};
 pub use middleware::{require_admin_scope, require_bearer};
 pub use providers::authentik::{AuthentikAuth, AuthentikConfig};

@@ -12,3 +12,4 @@ thiserror = { workspace = true }
 # Parse the master-password PHC hash at config-load time so a malformed or
 # placeholder hash fails fast at boot instead of during the OAuth consent flow.
 argon2 = { workspace = true }
+ipnet = { workspace = true }

@@ -5,6 +5,8 @@
 //! a normalized [`AuthIdentity`] on **every** request. Downstream scope checks
 //! always see a resolved identity; there is no anonymous / default role.
 
+use std::net::IpAddr;
+
 use axum::http::{header, HeaderMap};
 
 use crate::providers::authentik::AuthentikAuth;
@@ -42,15 +44,21 @@ pub struct AuthIdentity {
 impl AuthIdentity {
     /// Project into the claims type already consumed by MCP / GraphQL / admin.
     pub fn into_claims(self) -> AccessTokenClaims {
-        AccessTokenClaims {
-            iss: self.issuer,
-            aud: self.audience,
-            sub: self.subject,
-            client_id: self.client_id,
-            scope: self.scope,
-            iat: self.iat,
-            exp: self.exp,
-            jti: self.jti,
+        AccessTokenClaims::from(self)
+    }
+}
+
+impl From<AuthIdentity> for AccessTokenClaims {
+    fn from(id: AuthIdentity) -> Self {
+        Self {
+            iss: id.issuer,
+            aud: id.audience,
+            sub: id.subject,
+            client_id: id.client_id,
+            scope: id.scope,
+            iat: id.iat,
+            exp: id.exp,
+            jti: id.jti,
         }
     }
 }
@@ -63,6 +71,12 @@ pub enum AuthReject {
     InvalidToken,
     /// Forward-auth: required Authentik header absent — never invent identity.
     MissingForwardAuthHeader(&'static str),
+    /// Forward-auth enabled but no trusted hop configured (fail closed).
+    UntrustedForwardAuth,
+    /// TCP peer is not in `trusted_proxies`.
+    UntrustedForwardAuthPeer,
+    /// Shared hop secret missing or mismatched.
+    InvalidForwardAuthSecret,
     /// Authenticated but no MCP scope after group mapping.
     InsufficientScope,
 }
@@ -74,6 +88,9 @@ impl AuthReject {
             Self::EmptyBearer => "empty_bearer",
             Self::InvalidToken => "invalid_token",
             Self::MissingForwardAuthHeader(_) => "missing_forward_auth",
+            Self::UntrustedForwardAuth => "untrusted_forward_auth",
+            Self::UntrustedForwardAuthPeer => "untrusted_forward_auth",
+            Self::InvalidForwardAuthSecret => "untrusted_forward_auth",
             Self::InsufficientScope => "insufficient_scope",
         }
     }
@@ -91,10 +108,17 @@ pub enum AuthFacade {
 impl AuthFacade {
     /// Authenticate **this** request. Must be called on every protected request;
     /// never cache a default role when credentials/headers are omitted.
-    pub async fn authenticate(&self, headers: &HeaderMap) -> Result<AuthIdentity, AuthReject> {
+    ///
+    /// `peer` is the TCP peer address (`ConnectInfo`); required when Authentik
+    /// forward-auth uses `trusted_proxies`.
+    pub async fn authenticate(
+        &self,
+        headers: &HeaderMap,
+        peer: Option<IpAddr>,
+    ) -> Result<AuthIdentity, AuthReject> {
         match self {
             Self::Local(p) => p.authenticate(headers),
-            Self::Authentik(p) => p.authenticate(headers).await,
+            Self::Authentik(p) => p.authenticate(headers, peer).await,
         }
     }
 
@@ -185,6 +209,7 @@ mod tests {
                 resource: "https://mcp.example/mcp".into(),
                 accept_bearer: false,
                 forward_auth: true,
+                trusted_proxies: vec!["127.0.0.1/32".into()],
                 group_scopes,
                 ..Default::default()
             })
@@ -204,6 +229,14 @@ mod tests {
         assert_eq!(
             AuthReject::InsufficientScope.as_error_code(),
             "insufficient_scope"
+        );
+        assert_eq!(
+            AuthReject::UntrustedForwardAuthPeer.as_error_code(),
+            "untrusted_forward_auth"
+        );
+        assert_eq!(
+            AuthReject::InvalidForwardAuthSecret.as_error_code(),
+            "untrusted_forward_auth"
         );
     }
 
@@ -256,9 +289,25 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("x-authentik-username", HeaderValue::from_static("alice"));
         headers.insert("x-authentik-groups", HeaderValue::from_static("mcp-users"));
-        let id = f.authenticate(&headers).await.unwrap();
+        let id = f
+            .authenticate(
+                &headers,
+                Some(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
+            )
+            .await
+            .unwrap();
         assert_eq!(id.source, AuthSource::AuthentikForwardAuth);
         assert_eq!(id.scope, "mcp:use");
+
+        // Forged headers from an untrusted peer must fail.
+        let err = f
+            .authenticate(
+                &headers,
+                Some(std::net::IpAddr::V4(std::net::Ipv4Addr::new(8, 8, 8, 8))),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err, AuthReject::UntrustedForwardAuthPeer);
     }
 
     #[test]

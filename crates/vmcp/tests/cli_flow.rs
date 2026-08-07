@@ -273,6 +273,10 @@ fn flow_no_spec_then_manual_tool_links_sidecar() {
     );
     let reg = load_registry_raw(&dir.join("registry.json")).unwrap();
     assert!(reg.upstreams[0].sidecar_spec.is_none());
+    assert!(
+        !reg.upstreams[0].forward_identity,
+        "external SaaS must default forward_identity=false"
+    );
     assert!(!dir.join("specs/notion.json").exists());
 
     assert_ok(
@@ -290,6 +294,43 @@ fn flow_no_spec_then_manual_tool_links_sidecar() {
     assert_eq!(sc.tools.len(), 1);
     assert_eq!(sc.tools[0].name, "search");
     assert!(sc.tools[0].read_only);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Internal adapter: `--forward-identity` opts into X-Vmcp-* on HTTP calls.
+#[test]
+fn flow_add_mcp_forward_identity_opt_in() {
+    let dir = tmp_dir("fwdid");
+    let cfg = scaffold(&dir);
+
+    assert_ok(
+        &run(
+            &cfg,
+            &[
+                "add",
+                "mcp",
+                "--no-spec",
+                "--transport",
+                "http",
+                "--forward-identity",
+                "--description",
+                "internal stand adapter",
+                "stand_api",
+                "http://stand-api.svc/mcp",
+            ],
+        ),
+        "add mcp --forward-identity",
+    );
+    let reg = load_registry_raw(&dir.join("registry.json")).unwrap();
+    assert_eq!(reg.upstreams[0].name, "stand_api");
+    assert!(reg.upstreams[0].forward_identity);
+
+    let raw = fs::read_to_string(dir.join("registry.json")).unwrap();
+    assert!(
+        raw.contains("forward_identity"),
+        "opt-in flag must be persisted:\n{raw}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

@@ -560,6 +560,7 @@ impl TaskRunner {
         server: &str,
         tool: &str,
         args: Value,
+        caller: Option<&vmcp_upstream::CallerIdentity>,
     ) -> anyhow::Result<rmcp::model::CallToolResult> {
         if !self.is_allowed(server, tool) {
             anyhow::bail!(
@@ -567,7 +568,7 @@ impl TaskRunner {
                  execution.taskSupport (or sidecar task_support) may be invoked via run_task"
             );
         }
-        self.pool.call(server, tool, args).await
+        self.pool.call(server, tool, args, caller).await
     }
 
     /// Task-augmented path: enqueue and return `CreateTaskResult` immediately.
@@ -577,6 +578,7 @@ impl TaskRunner {
         server: String,
         tool: String,
         args: Value,
+        caller: Option<vmcp_upstream::CallerIdentity>,
     ) -> Result<CreateTaskResult, TaskError> {
         if !self.is_allowed(&server, &tool) {
             return Err(TaskError::NotFound(format!(
@@ -632,7 +634,7 @@ impl TaskRunner {
                 format!("calling upstream {server_bg}.{tool_bg}"),
                 json!({ "status": "working", "server": server_bg, "tool": tool_bg }),
             );
-            match pool.call(&server_bg, &tool_bg, args).await {
+            match pool.call(&server_bg, &tool_bg, args, caller.as_ref()).await {
                 Ok(result) => {
                     let is_error = result.is_error.unwrap_or(false);
                     let payload = serde_json::to_value(&result).unwrap_or(Value::Null);
@@ -993,7 +995,7 @@ mod tests {
     async fn runner_run_now_rejects_non_allowlisted() {
         let (_dir, runner) = runner_with_allowlist(HashSet::new());
         let err = runner
-            .run_now("mock", "delay_read", serde_json::json!({}))
+            .run_now("mock", "delay_read", serde_json::json!({}), None)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("not task-capable"));
@@ -1022,7 +1024,7 @@ mod tests {
         let mut keys = HashSet::new();
         keys.insert(("mock".into(), "delay_read".into()));
         let (_dir, runner) = runner_with_allowlist(keys);
-        let err = runner.enqueue("anon".into(), "nope".into(), "x".into(), Value::Null);
+        let err = runner.enqueue("anon".into(), "nope".into(), "x".into(), Value::Null, None);
         assert!(matches!(err, Err(TaskError::NotFound(_))));
 
         let mut rx = runner.bus.subscribe();
@@ -1032,6 +1034,7 @@ mod tests {
                 "mock".into(),
                 "delay_read".into(),
                 serde_json::json!({}),
+                None,
             )
             .unwrap();
         assert_eq!(created.task.status, TaskStatus::Working);

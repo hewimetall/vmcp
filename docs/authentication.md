@@ -42,14 +42,21 @@ jwks_url = "https://auth.example.com/application/o/mcp-internal/jwks/"
 audiences = ["https://architecture.mcpwork.space/mcp"]
 accept_bearer = true          # MCP-клиенты
 forward_auth = true           # браузер за Envoy/Caddy forward-auth
+# ОБЯЗАТЕЛЬНО при forward_auth: hop trust (иначе X-authentik-* с любого peer)
+trusted_proxies = ["10.244.0.0/16"]
+# или / плюс: forward_auth_secret = "…"  (env: VMCP_AUTH__AUTHENTIK__FORWARD_AUTH_SECRET)
+# forward_auth_secret_header = "x-vmcp-forward-auth"
 group_scopes = { "mcp-users" = "mcp:use", "mcp-admins" = "mcp:admin" }
 ```
 
 Правила forward-auth:
 
-1. Нет `X-authentik-username` → отказ (не аноним).
-2. Группы режутся по `|`, `,`, `;`, пробелу; сравнение **точное** (`architect-x` ≠ `architect`).
-3. Scope из `group_scopes` считается на **каждом** запросе.
+1. Hop trust: TCP peer ∈ `trusted_proxies` и/или заголовок с `forward_auth_secret` (оба → AND). Без knobs — отказ при загрузке конфига.
+2. Нет `X-authentik-username` → отказ (не аноним).
+3. Группы режутся по `|`, `,`, `;`, пробелу; сравнение **точное** (`architect-x` ≠ `architect`).
+4. Scope из `group_scopes` считается на **каждом** запросе.
+
+Подделка `X-authentik-*` с `kubectl port-forward` / прямого доступа к pod **не** должна давать сессию — см. [ADR 0001](adr/0001-forward-auth-trust-and-identity-propagation.md).
 
 Предпочтительно: pre-registered public client в Authentik + Authorization Code + PKCE (не DCR).
 

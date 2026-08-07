@@ -488,6 +488,9 @@ Args: `query` (required GraphQL document), `variables` (optional JSON object), `
         if let Some(policy) = scope_policy_from_request_context(&context) {
             req = req.data(policy);
         }
+        if let Some(caller) = caller_identity_from_request_context(&context) {
+            req = req.data(caller);
+        }
         let resp = schema_guard.execute(req).await;
         let body = serde_json::to_value(&resp)
             .unwrap_or_else(|e| json!({"errors": [{"message": format!("serialize: {e}")}]}));
@@ -507,6 +510,22 @@ pub(crate) fn scope_policy_from_request_context(
     let parts = context.extensions.get::<http::request::Parts>()?;
     let claims = parts.extensions.get::<AccessTokenClaims>()?;
     Some(vmcp_auth::ScopePolicy::parse(&claims.scope))
+}
+
+/// Caller identity for upstream `X-Vmcp-*` forwarding (groups included).
+pub(crate) fn caller_identity_from_request_context(
+    context: &RequestContext<RoleServer>,
+) -> Option<vmcp_upstream::CallerIdentity> {
+    use vmcp_auth::AuthIdentity;
+
+    let parts = context.extensions.get::<http::request::Parts>()?;
+    let id = parts.extensions.get::<AuthIdentity>()?;
+    Some(vmcp_upstream::CallerIdentity::new(
+        id.subject.clone(),
+        id.groups.clone(),
+        id.client_id.clone(),
+        id.scope.clone(),
+    ))
 }
 
 impl VmcpServer {
@@ -629,6 +648,7 @@ impl ServerHandler for VmcpServer {
                     .into());
                 }
             }
+            let caller = caller_identity_from_request_context(&context);
             if context
                 .client_capabilities()
                 .is_some_and(|caps| caps.supports_tasks())
@@ -636,11 +656,15 @@ impl ServerHandler for VmcpServer {
                 let owner = task_owner(&context);
                 let create = t
                     .runner
-                    .enqueue(owner, server, tool, args)
+                    .enqueue(owner, server, tool, args, caller)
                     .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
                 return Ok(CallToolResponse::Task(create));
             }
-            return match t.runner.run_now(&server, &tool, args).await {
+            return match t
+                .runner
+                .run_now(&server, &tool, args, caller.as_ref())
+                .await
+            {
                 Ok(r) => Ok(r.into()),
                 Err(e) => {
                     Ok(CallToolResult::error(vec![ContentBlock::text(format!("{e:#}"))]).into())

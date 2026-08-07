@@ -4,9 +4,11 @@
 //! Authentik share one gate. Scope enforcement still happens downstream on
 //! every tool call via [`crate::scopes::ScopePolicy`].
 
+use std::net::SocketAddr;
+
 use axum::{
     body::Body,
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{header, Request, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -22,9 +24,17 @@ pub async fn require_bearer(
     mut req: Request<Body>,
     next: Next,
 ) -> Response {
-    match facade.authenticate(req.headers()).await {
+    let peer = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip());
+    match facade.authenticate(req.headers(), peer).await {
         Ok(identity) => {
-            req.extensions_mut().insert(identity.into_claims());
+            // Keep full identity (incl. groups) for upstream propagation;
+            // AccessTokenClaims remains for existing scope / task consumers.
+            req.extensions_mut()
+                .insert(AccessTokenClaims::from(identity.clone()));
+            req.extensions_mut().insert(identity);
             next.run(req).await
         }
         Err(reject) => unauthorized(&facade, reject),
@@ -227,7 +237,9 @@ mod tests {
     #[tokio::test]
     async fn authentik_insufficient_scope_returns_forbidden() {
         use crate::providers::authentik::{AuthentikAuth, AuthentikConfig};
+        use axum::extract::ConnectInfo;
         use std::collections::BTreeMap;
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
         let mut group_scopes = BTreeMap::new();
         group_scopes.insert("mcp-users".into(), "mcp:use".into());
@@ -239,25 +251,70 @@ mod tests {
                 resource: "https://mcp.example/mcp".into(),
                 accept_bearer: false,
                 forward_auth: true,
+                trusted_proxies: vec!["127.0.0.1/32".into()],
                 group_scopes,
                 ..Default::default()
             })
             .unwrap(),
         );
-        let resp = app(facade)
-            .oneshot(
-                Request::builder()
-                    .uri("/mcp")
-                    .method("POST")
-                    .header("x-authentik-username", "alice")
-                    .header("x-authentik-groups", "unrelated")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
+        let mut req = Request::builder()
+            .uri("/mcp")
+            .method("POST")
+            .header("x-authentik-username", "alice")
+            .header("x-authentik-groups", "unrelated")
+            .body(Body::empty())
             .unwrap();
+        req.extensions_mut().insert(ConnectInfo(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            1234,
+        )));
+        let resp = app(facade).oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
         assert!(resp.headers().get(header::WWW_AUTHENTICATE).is_some());
+    }
+
+    #[tokio::test]
+    async fn authentik_forged_headers_from_untrusted_peer_rejected() {
+        use crate::providers::authentik::{AuthentikAuth, AuthentikConfig};
+        use axum::extract::ConnectInfo;
+        use std::collections::BTreeMap;
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        let mut group_scopes = BTreeMap::new();
+        group_scopes.insert("admin".into(), "mcp:admin".into());
+        let facade = AuthFacade::Authentik(
+            AuthentikAuth::new(AuthentikConfig {
+                issuer: "https://auth.example/".into(),
+                jwks_url: "https://auth.example/jwks/".into(),
+                audiences: vec!["https://mcp.example/mcp".into()],
+                resource: "https://mcp.example/mcp".into(),
+                accept_bearer: false,
+                forward_auth: true,
+                trusted_proxies: vec!["10.244.0.0/16".into()],
+                group_scopes,
+                ..Default::default()
+            })
+            .unwrap(),
+        );
+        // Simulate kubectl port-forward / direct pod hit from a non-gateway IP.
+        let mut req = Request::builder()
+            .uri("/mcp")
+            .method("POST")
+            .header("x-authentik-username", "kto-ugodno")
+            .header("x-authentik-groups", "admin")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut().insert(ConnectInfo(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            5555,
+        )));
+        let resp = app(facade).oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let body = body_string(resp).await;
+        assert!(
+            body.contains("untrusted_forward_auth"),
+            "expected untrusted_forward_auth, got {body}"
+        );
     }
 
     #[tokio::test]

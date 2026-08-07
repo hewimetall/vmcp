@@ -358,6 +358,17 @@ pub struct AuthentikSettings {
     /// Matching is exact after delimiter split (`|`, `,`, `;`, space).
     #[serde(default)]
     pub group_scopes: std::collections::BTreeMap<String, String>,
+    /// TCP peer CIDRs allowed to present `X-authentik-*` (Gateway / mesh).
+    /// Required (alone or with `forward_auth_secret`) when `forward_auth = true`.
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
+    /// Shared hop secret the authenticating proxy injects. Prefer env
+    /// `VMCP_AUTH__AUTHENTIK__FORWARD_AUTH_SECRET`.
+    #[serde(default)]
+    pub forward_auth_secret: String,
+    /// Header carrying [`Self::forward_auth_secret`].
+    #[serde(default = "AuthentikSettings::default_forward_auth_secret_header")]
+    pub forward_auth_secret_header: String,
 }
 
 impl AuthentikSettings {
@@ -373,6 +384,9 @@ impl AuthentikSettings {
     fn default_groups_claim() -> String {
         "groups".into()
     }
+    fn default_forward_auth_secret_header() -> String {
+        "x-vmcp-forward-auth".into()
+    }
 }
 
 impl Default for AuthentikSettings {
@@ -387,6 +401,9 @@ impl Default for AuthentikSettings {
             groups_header: Self::default_groups_header(),
             groups_claim: Self::default_groups_claim(),
             group_scopes: std::collections::BTreeMap::new(),
+            trusted_proxies: Vec::new(),
+            forward_auth_secret: String::new(),
+            forward_auth_secret_header: Self::default_forward_auth_secret_header(),
         }
     }
 }
@@ -619,6 +636,23 @@ impl Settings {
                     .into(),
             ));
         }
+        if ak.forward_auth
+            && ak.trusted_proxies.is_empty()
+            && ak.forward_auth_secret.trim().is_empty()
+        {
+            return Err(ConfigError::Validation(
+                "auth.authentik.forward_auth requires trusted_proxies and/or forward_auth_secret \
+                 (client-supplied X-authentik-* must not be trusted from any peer)"
+                    .into(),
+            ));
+        }
+        for cidr in &ak.trusted_proxies {
+            if cidr.parse::<ipnet::IpNet>().is_err() {
+                return Err(ConfigError::Validation(format!(
+                    "auth.authentik.trusted_proxies: invalid CIDR `{cidr}`"
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -637,6 +671,22 @@ impl Settings {
                          auth.admin.mode = authentik"
                             .into(),
                     ));
+                }
+                // Same hop trust as MCP forward-auth (settings live under [auth.authentik]).
+                let ak = &self.auth.authentik;
+                if ak.trusted_proxies.is_empty() && ak.forward_auth_secret.trim().is_empty() {
+                    return Err(ConfigError::Validation(
+                        "auth.admin.mode = authentik requires auth.authentik.trusted_proxies \
+                         and/or forward_auth_secret"
+                            .into(),
+                    ));
+                }
+                for cidr in &ak.trusted_proxies {
+                    if cidr.parse::<ipnet::IpNet>().is_err() {
+                        return Err(ConfigError::Validation(format!(
+                            "auth.authentik.trusted_proxies: invalid CIDR `{cidr}`"
+                        )));
+                    }
                 }
                 Ok(())
             }
@@ -1135,6 +1185,7 @@ jwks_url = "https://auth.example.com/application/o/mcp-internal/jwks/"
 audiences = ["https://mcp.example.com/mcp"]
 forward_auth = true
 accept_bearer = true
+trusted_proxies = ["10.244.0.0/16"]
 group_scopes = { "mcp-users" = "mcp:use" }
 "#,
         );
@@ -1154,6 +1205,7 @@ group_scopes = { "mcp-users" = "mcp:use" }
                 .map(String::as_str),
             Some("mcp:use")
         );
+        assert_eq!(s.auth.authentik.trusted_proxies, vec!["10.244.0.0/16"]);
     }
 
     #[test]
@@ -1170,12 +1222,37 @@ mode = "none"
 issuer = "https://auth.example.com/application/o/mcp-internal/"
 jwks_url = "https://auth.example.com/application/o/mcp-internal/jwks/"
 forward_auth = true
+trusted_proxies = ["10.0.0.0/8"]
 "#,
         );
         let err = load(Some(&tmp.0)).unwrap_err().to_string();
         assert!(
             err.contains("group_scopes"),
             "expected group_scopes validation, got: {err}"
+        );
+    }
+
+    #[test]
+    fn authentik_requires_trust_when_forward_auth() {
+        let tmp = write_tmp(
+            r#"
+[auth]
+provider = "authentik"
+
+[auth.admin]
+mode = "none"
+
+[auth.authentik]
+issuer = "https://auth.example.com/application/o/mcp-internal/"
+jwks_url = "https://auth.example.com/application/o/mcp-internal/jwks/"
+forward_auth = true
+group_scopes = { "mcp-users" = "mcp:use" }
+"#,
+        );
+        let err = load(Some(&tmp.0)).unwrap_err().to_string();
+        assert!(
+            err.contains("trusted_proxies") || err.contains("forward_auth_secret"),
+            "expected hop trust validation, got: {err}"
         );
     }
 
@@ -1190,6 +1267,7 @@ provider = "authentik"
 [auth.authentik]
 issuer = "https://auth.example.com/application/o/mcp-internal/"
 jwks_url = "https://auth.example.com/application/o/mcp-internal/jwks/"
+forward_auth_secret = "gateway-hop"
 group_scopes = { "mcp-users" = "mcp:use" }
 "#,
         );
@@ -1213,6 +1291,7 @@ mode = "none"
 [auth.authentik]
 issuer = "https://auth.example.com/application/o/mcp-internal/"
 jwks_url = "https://auth.example.com/application/o/mcp-internal/jwks/"
+forward_auth_secret = "gateway-hop"
 group_scopes = { "mcp-users" = "mcp:use" }
 "#,
         );

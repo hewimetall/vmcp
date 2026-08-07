@@ -2,11 +2,13 @@
 //! headers from a trusted gateway.
 //!
 //! Contract:
-//! 1. Trust gateway headers only when present — never invent anonymous / default role.
+//! 1. Trust gateway headers only from a proven hop (`trusted_proxies` and/or
+//!    `forward_auth_secret`) — never invent anonymous / default role.
 //! 2. Split groups on `|`, `,`, `;`, space and match **exactly** (not substring).
 //! 3. Resolve scopes from groups on **every** request (no omitted-parameter bypass).
 
 use std::collections::BTreeMap;
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use axum::http::{HeaderMap, HeaderName};
@@ -16,6 +18,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::facade::{AuthFacade, AuthIdentity, AuthReject, AuthSource};
+use crate::forward_trust::ForwardAuthTrust;
 use crate::groups::{scopes_from_groups, split_groups};
 use crate::remote_jwks::RemoteJwks;
 
@@ -42,6 +45,12 @@ pub struct AuthentikConfig {
     pub groups_claim: String,
     /// Exact group name → space-separated MCP scopes.
     pub group_scopes: BTreeMap<String, String>,
+    /// TCP peer CIDRs allowed to present forward-auth headers.
+    pub trusted_proxies: Vec<String>,
+    /// Shared hop secret the gateway injects (optional if proxies set).
+    pub forward_auth_secret: String,
+    /// Header name for [`Self::forward_auth_secret`].
+    pub forward_auth_secret_header: String,
 }
 
 impl Default for AuthentikConfig {
@@ -57,6 +66,9 @@ impl Default for AuthentikConfig {
             groups_header: "x-authentik-groups".into(),
             groups_claim: "groups".into(),
             group_scopes: BTreeMap::new(),
+            trusted_proxies: Vec::new(),
+            forward_auth_secret: String::new(),
+            forward_auth_secret_header: "x-vmcp-forward-auth".into(),
         }
     }
 }
@@ -73,6 +85,7 @@ pub struct AuthentikAuth {
     groups_header: HeaderName,
     groups_claim: String,
     group_scopes: BTreeMap<String, String>,
+    trust: ForwardAuthTrust,
     jwks: Arc<RemoteJwks>,
 }
 
@@ -82,6 +95,17 @@ impl AuthentikAuth {
             .map_err(|e| anyhow::anyhow!("invalid username_header: {e}"))?;
         let groups_header = HeaderName::from_bytes(cfg.groups_header.as_bytes())
             .map_err(|e| anyhow::anyhow!("invalid groups_header: {e}"))?;
+        let trust = ForwardAuthTrust::new(
+            &cfg.trusted_proxies,
+            &cfg.forward_auth_secret,
+            &cfg.forward_auth_secret_header,
+        )?;
+        if cfg.forward_auth && !trust.is_configured() {
+            anyhow::bail!(
+                "auth.authentik.forward_auth requires trusted_proxies and/or forward_auth_secret \
+                 (refusing to trust client-supplied X-authentik-* from any peer)"
+            );
+        }
         let jwks = RemoteJwks::new(cfg.jwks_url)?;
 
         Ok(Self {
@@ -94,11 +118,21 @@ impl AuthentikAuth {
             groups_header,
             groups_claim: cfg.groups_claim,
             group_scopes: cfg.group_scopes,
+            trust,
             jwks: Arc::new(jwks),
         })
     }
 
-    pub async fn authenticate(&self, headers: &HeaderMap) -> Result<AuthIdentity, AuthReject> {
+    /// Hop trust policy (shared with `/admin` Authentik mode).
+    pub fn forward_trust(&self) -> &ForwardAuthTrust {
+        &self.trust
+    }
+
+    pub async fn authenticate(
+        &self,
+        headers: &HeaderMap,
+        peer: Option<IpAddr>,
+    ) -> Result<AuthIdentity, AuthReject> {
         // Machine clients: Bearer first. Browser form redirects are not viable.
         if self.accept_bearer {
             if let Some(token) = AuthFacade::bearer_token(headers)? {
@@ -107,13 +141,20 @@ impl AuthentikAuth {
         }
 
         if self.forward_auth {
-            return self.authenticate_forward_auth(headers);
+            return self.authenticate_forward_auth(headers, peer);
         }
 
         Err(AuthReject::MissingBearer)
     }
 
-    fn authenticate_forward_auth(&self, headers: &HeaderMap) -> Result<AuthIdentity, AuthReject> {
+    fn authenticate_forward_auth(
+        &self,
+        headers: &HeaderMap,
+        peer: Option<IpAddr>,
+    ) -> Result<AuthIdentity, AuthReject> {
+        // Prove the hop before reading identity headers.
+        self.trust.verify(headers, peer)?;
+
         let username = headers
             .get(&self.username_header)
             .and_then(|v| v.to_str().ok())
@@ -287,15 +328,23 @@ mod tests {
             resource: "https://mcp.example.com/mcp".into(),
             accept_bearer: false,
             forward_auth: true,
+            trusted_proxies: vec!["127.0.0.1/32".into(), "::1/128".into()],
             group_scopes,
             ..Default::default()
         }
     }
 
+    fn local_peer() -> Option<std::net::IpAddr> {
+        Some(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+    }
+
     #[tokio::test]
     async fn forward_auth_requires_username_header() {
         let auth = AuthentikAuth::new(cfg_forward()).unwrap();
-        let err = auth.authenticate(&HeaderMap::new()).await.unwrap_err();
+        let err = auth
+            .authenticate(&HeaderMap::new(), local_peer())
+            .await
+            .unwrap_err();
         assert_eq!(
             err,
             AuthReject::MissingForwardAuthHeader("X-authentik-username")
@@ -313,7 +362,7 @@ mod tests {
             HeaderValue::from_static("architect-x|mcp-users"),
         );
 
-        let id = auth.authenticate(&headers).await.unwrap();
+        let id = auth.authenticate(&headers, local_peer()).await.unwrap();
         assert_eq!(id.subject, "alice");
         assert_eq!(id.scope, "mcp:use");
         assert_eq!(id.source, AuthSource::AuthentikForwardAuth);
@@ -329,8 +378,40 @@ mod tests {
             "x-authentik-groups",
             HeaderValue::from_static("unrelated-group"),
         );
-        let err = auth.authenticate(&headers).await.unwrap_err();
+        let err = auth.authenticate(&headers, local_peer()).await.unwrap_err();
         assert_eq!(err, AuthReject::InsufficientScope);
+    }
+
+    #[tokio::test]
+    async fn forward_auth_rejects_untrusted_peer() {
+        let auth = AuthentikAuth::new(cfg_forward()).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("x-authentik-username", HeaderValue::from_static("eve"));
+        headers.insert("x-authentik-groups", HeaderValue::from_static("mcp-users"));
+        let err = auth
+            .authenticate(
+                &headers,
+                Some(std::net::IpAddr::V4(std::net::Ipv4Addr::new(1, 2, 3, 4))),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err, AuthReject::UntrustedForwardAuthPeer);
+    }
+
+    #[tokio::test]
+    async fn forward_auth_requires_trust_config_at_construct() {
+        let err = AuthentikAuth::new(AuthentikConfig {
+            trusted_proxies: vec![],
+            forward_auth_secret: String::new(),
+            ..cfg_forward()
+        })
+        .err()
+        .expect("must refuse forward_auth without trust");
+        assert!(
+            err.to_string().contains("trusted_proxies")
+                || err.to_string().contains("forward_auth_secret"),
+            "{err}"
+        );
     }
 
     #[tokio::test]
@@ -338,10 +419,14 @@ mod tests {
         let auth = AuthentikAuth::new(AuthentikConfig {
             accept_bearer: false,
             forward_auth: false,
+            trusted_proxies: vec![],
             ..cfg_forward()
         })
         .unwrap();
-        let err = auth.authenticate(&HeaderMap::new()).await.unwrap_err();
+        let err = auth
+            .authenticate(&HeaderMap::new(), None)
+            .await
+            .unwrap_err();
         assert_eq!(err, AuthReject::MissingBearer);
     }
 
@@ -437,7 +522,7 @@ mod tests {
             header::AUTHORIZATION,
             HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
         );
-        let id = auth.authenticate(&headers).await.unwrap();
+        let id = auth.authenticate(&headers, None).await.unwrap();
         assert_eq!(id.source, AuthSource::AuthentikJwt);
         assert_eq!(id.subject, "alice");
         assert_eq!(id.client_id, "cursor");
@@ -466,6 +551,7 @@ mod tests {
             resource: audience.into(),
             accept_bearer: true,
             forward_auth: true,
+            trusted_proxies: vec!["127.0.0.1/32".into()],
             groups_claim: "ak_groups".into(),
             group_scopes,
             ..Default::default()
@@ -489,7 +575,7 @@ mod tests {
             header::AUTHORIZATION,
             HeaderValue::from_str(&format!("Bearer {good}")).unwrap(),
         );
-        let id = auth.authenticate(&headers).await.unwrap();
+        let id = auth.authenticate(&headers, None).await.unwrap();
         assert_eq!(id.scope, "mcp:use");
         assert_eq!(id.subject, "u2");
 
@@ -509,7 +595,7 @@ mod tests {
             HeaderValue::from_str(&format!("Bearer {empty}")).unwrap(),
         );
         assert_eq!(
-            auth.authenticate(&headers).await.unwrap_err(),
+            auth.authenticate(&headers, None).await.unwrap_err(),
             AuthReject::InsufficientScope
         );
 
@@ -529,7 +615,7 @@ mod tests {
             HeaderValue::from_str(&format!("Bearer {bad}")).unwrap(),
         );
         assert_eq!(
-            auth.authenticate(&headers).await.unwrap_err(),
+            auth.authenticate(&headers, None).await.unwrap_err(),
             AuthReject::InvalidToken
         );
     }

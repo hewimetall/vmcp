@@ -15,6 +15,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use base64::Engine;
+use vmcp_auth::ForwardAuthTrust;
 
 use crate::AdminState;
 
@@ -41,12 +42,14 @@ pub enum AdminAuthPolicy {
     /// HTTP Basic against the master password hash on [`AdminState`].
     #[default]
     Basic,
-    /// Authentik forward-auth headers.
+    /// Authentik forward-auth headers (same hop trust as MCP facade).
     Authentik {
         username_header: HeaderName,
         groups_header: HeaderName,
         /// Exact group names (any one is enough).
         required_groups: Vec<String>,
+        /// Gate `X-authentik-*` to trusted proxies / hop secret.
+        trust: ForwardAuthTrust,
     },
 }
 
@@ -115,30 +118,45 @@ pub async fn require_admin_auth(
             username_header,
             groups_header,
             required_groups,
-        } => match authenticate_authentik_headers(
-            req.headers(),
-            username_header,
-            groups_header,
-            required_groups,
-        ) {
-            Ok(subject) => {
-                req.extensions_mut().insert(AdminAuth {
-                    subject,
-                    source: AdminAuthSource::AuthentikHeaders,
-                });
-                next.run(req).await
+            trust,
+        } => {
+            let peer = req
+                .extensions()
+                .get::<ConnectInfo<SocketAddr>>()
+                .map(|ci| ci.0.ip());
+            match authenticate_authentik_headers(
+                req.headers(),
+                peer,
+                username_header,
+                groups_header,
+                required_groups,
+                trust,
+            ) {
+                Ok(subject) => {
+                    req.extensions_mut().insert(AdminAuth {
+                        subject,
+                        source: AdminAuthSource::AuthentikHeaders,
+                    });
+                    next.run(req).await
+                }
+                Err(resp) => resp,
             }
-            Err(resp) => resp,
-        },
+        }
     }
 }
 
 fn authenticate_authentik_headers(
     headers: &HeaderMap,
+    peer: Option<IpAddr>,
     username_header: &HeaderName,
     groups_header: &HeaderName,
     required_groups: &[String],
+    trust: &ForwardAuthTrust,
 ) -> Result<String, Response> {
+    if let Err(reject) = trust.verify(headers, peer) {
+        return Err(unauthorized_forward(reject.as_error_code()));
+    }
+
     let username = headers
         .get(username_header)
         .and_then(|v| v.to_str().ok())
@@ -222,19 +240,38 @@ mod tests {
         let user_h = HeaderName::from_static("x-authentik-username");
         let groups_h = HeaderName::from_static("x-authentik-groups");
         let required = vec!["mcp-admins".into()];
+        let trust =
+            ForwardAuthTrust::new(&["127.0.0.1/32".into()], "", "x-vmcp-forward-auth").unwrap();
+        let peer = Some(IpAddr::V4(Ipv4Addr::LOCALHOST));
 
         let mut headers = HeaderMap::new();
-        let err = authenticate_authentik_headers(&headers, &user_h, &groups_h, &required);
+        let err =
+            authenticate_authentik_headers(&headers, peer, &user_h, &groups_h, &required, &trust);
         assert!(err.is_err());
 
         headers.insert(&user_h, HeaderValue::from_static("alice"));
         headers.insert(&groups_h, HeaderValue::from_static("mcp-admins-extra|ops"));
         // mcp-admins-extra must NOT satisfy mcp-admins
-        assert!(authenticate_authentik_headers(&headers, &user_h, &groups_h, &required).is_err());
+        assert!(authenticate_authentik_headers(
+            &headers, peer, &user_h, &groups_h, &required, &trust
+        )
+        .is_err());
 
         headers.insert(&groups_h, HeaderValue::from_static("ops|mcp-admins"));
         let subject =
-            authenticate_authentik_headers(&headers, &user_h, &groups_h, &required).unwrap();
+            authenticate_authentik_headers(&headers, peer, &user_h, &groups_h, &required, &trust)
+                .unwrap();
         assert_eq!(subject, "alice");
+
+        // Untrusted peer cannot forge admin headers.
+        assert!(authenticate_authentik_headers(
+            &headers,
+            Some(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))),
+            &user_h,
+            &groups_h,
+            &required,
+            &trust,
+        )
+        .is_err());
     }
 }

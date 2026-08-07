@@ -356,6 +356,9 @@ async fn serve_http(
                     groups_header: ak.groups_header.clone(),
                     groups_claim: ak.groups_claim.clone(),
                     group_scopes: ak.group_scopes.clone(),
+                    trusted_proxies: ak.trusted_proxies.clone(),
+                    forward_auth_secret: ak.forward_auth_secret.clone(),
+                    forward_auth_secret_header: ak.forward_auth_secret_header.clone(),
                 })?)
             }
         })
@@ -652,6 +655,12 @@ async fn serve_http(
                         groups_header: axum::http::HeaderName::from_bytes(groups_h.as_bytes())
                             .context("auth.admin.groups_header")?,
                         required_groups: cfg.auth.admin.required_groups.clone(),
+                        trust: vmcp_auth::ForwardAuthTrust::new(
+                            &cfg.auth.authentik.trusted_proxies,
+                            &cfg.auth.authentik.forward_auth_secret,
+                            &cfg.auth.authentik.forward_auth_secret_header,
+                        )
+                        .context("auth.authentik hop trust for admin")?,
                     }
                 }
             };

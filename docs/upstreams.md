@@ -76,7 +76,36 @@ vmcp remove tool presentation build_presentation
 **Общие поля:** `name` (обязателен → GraphQL namespace + proxy-префикс), `description`, `transport` (`stdio` default / `http`), `enabled` (default true), `sidecar_spec`.
 
 **stdio:** `command`, `args`, `env` (`${VAR}` раскрывается), `cwd`.
-**http:** `url`, `bearer` (raw token → `Authorization: Bearer …`).
+**http:** `url`, `bearer` (raw token → `Authorization: Bearer …` — **service** credential), `forward_identity` (default **`false`**).
+
+### Caller identity → HTTP upstream (opt-in)
+
+Смешанный кластер: **внешние** SaaS и **внутренние** адаптеры рядом.
+
+| Upstream | `forward_identity` | Зачем |
+| -------- | ------------------ | ----- |
+| Notion / Context7 / … | `false` (default) | не светить subject/groups наружу |
+| `stand-api-mcp` / cluster adapters | `true` | adapter проверяет tenancy по `X-Vmcp-*` |
+
+```bash
+# внешний — по умолчанию без identity
+vmcp add mcp --transport http notion https://mcp.notion.com/mcp
+
+# внутренний — явно включить
+vmcp add mcp --transport http --forward-identity stand_api http://stand-api.svc/mcp
+```
+
+Когда `forward_identity = true` и caller известен, на `tools/call` уходит:
+
+| Header | Содержание |
+| ------ | ---------- |
+| `Authorization` | только registry `bearer` (не user JWT) |
+| `X-Vmcp-Subject` | subject |
+| `X-Vmcp-Groups` | группы через `,` |
+| `X-Vmcp-Client-Id` | client_id |
+| `X-Vmcp-Scope` | MCP scopes |
+
+Эти заголовки ставит **vmcp** после своей auth, не клиент. Контракт: [ADR 0001](adr/0001-forward-auth-trust-and-identity-propagation.md).
 
 ```json
 {

@@ -30,6 +30,7 @@ sha2 = "0.10"
 # Authentik remote JWKS over the same rustls stack as upstream MCP clients —
 # never pull OpenSSL via reqwest default native-tls.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+ipnet = { workspace = true }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

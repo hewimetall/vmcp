@@ -15,4 +15,7 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 dashmap = { workspace = true }
 arc-swap = { workspace = true }
+http = "1"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
+sse-stream = { version = "0.2.4" }
 sqlparser = { version = "0.62", features = ["visitor"] }

@@ -29,7 +29,7 @@ lifecycle. Do not tell agents to send server-initiated `roots/list`,
 | Version | `params.protocolVersion` once | `_meta["io.modelcontextprotocol/protocolVersion"]` on **every** request |
 | Client identity | `clientInfo` at initialize | `_meta["io.modelcontextprotocol/clientInfo"]` + `clientCapabilities` per request |
 | Server identity | `initialize` result | `_meta["io.modelcontextprotocol/serverInfo"]` on results |
-| HTTP sessions | `Mcp-Session-Id` | **Removed.** Cross-call state = explicit handles in tool args (SEP-2567) |
+| How a session is opened | `initialize` mints `Mcp-Session-Id` | Per-request `_meta.clientInfo`; push session = `subscriptions/listen` (`subscriptionId` = that request id). App state = explicit handles in tool args (SEP-2567). No transport cookie. |
 | SSE resume | `Last-Event-ID` | **Removed.** Broken stream → new request id (SEP-2575) |
 | GET `/mcp` | standalone SSE | Replaced by `subscriptions/listen` POST |
 | Subscribe | `resources/subscribe` | `subscriptions/listen` opt-in types + `subscriptionId` |
@@ -49,7 +49,8 @@ lifecycle. Do not tell agents to send server-initiated `roots/list`,
 Still use the vendored plugin for **product** questions (remote HTTP vs MCPB,
 tool-design patterns, CIMD). Then apply this overlay before writing code:
 
-1. Transport: Streamable HTTP. Stateless. No session id.
+1. Transport: Streamable HTTP. No `Mcp-Session-Id` cookie. Open push
+   with `subscriptions/listen`; thread app state as tool-arg handles.
 2. Implement `server/discover` (`supportedVersions` includes `"2026-07-28"`).
 3. Every request `_meta` must carry protocol version + client capabilities.
 4. Every result includes `resultType`. List endpoints include `ttlMs`/`cacheScope`.

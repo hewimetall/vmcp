@@ -3836,8 +3836,11 @@ dependencies = [
  "async-graphql",
  "rmcp",
  "serde_json",
+ "tokio",
  "tracing",
  "vmcp-auth",
+ "vmcp-notify",
+ "vmcp-registry",
  "vmcp-upstream",
 ]
 

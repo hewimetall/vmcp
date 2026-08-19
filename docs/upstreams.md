@@ -34,6 +34,7 @@ Env: `VMCP_REGISTRY_PATH`, `VMCP_SPEC_DIR`, `VMCP_LOCK_PATH`, `VMCP_SKILLS_DIR`,
 | Health | `connected` обновляется по RPC outcome; idle dead upstream без вызовов может долго казаться up (G24) |
 | `${ENV}` | Missing var → **ошибка** load registry (strict) |
 | Размер registry | Max **256** upstreams; duplicate `name` → ошибка |
+| Каталог (G25) | `upstream:<name>` whitelist режет `servers` / `search` / GraphQL schema / `/mcp-proxy` `tools/list`. `mcp:admin` — полный вид. Контракт: [ADR 0002](adr/0002-per-caller-catalog-visibility.md) |
 
 ---
 

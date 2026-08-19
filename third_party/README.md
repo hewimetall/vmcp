@@ -32,3 +32,15 @@ rmcp = { path = "third_party/rmcp" }
 ```
 
 Drop this patch once an upstream `rmcp` release includes the same fix.
+
+## `mcp-server-dev` (Anthropic skills snapshot)
+
+Official MCP builder skills linked from the **2026-07-28** docs
+([Build with Agent Skills](https://modelcontextprotocol.io/docs/2026-07-28/develop/build-with-agent-skills)).
+
+Snapshot + spec-pin gap: [`mcp-server-dev/SOURCE.md`](mcp-server-dev/SOURCE.md).
+
+The plugin still documents protocol **2025-11-25**. For this repo, protocol
+**MUST** be **2026-07-28** — see
+[`.cursor/skills/mcp-2026-07-28/SKILL.md`](../.cursor/skills/mcp-2026-07-28/SKILL.md)
+and [`docs/mcp-2026-07-28.md`](../docs/mcp-2026-07-28.md).

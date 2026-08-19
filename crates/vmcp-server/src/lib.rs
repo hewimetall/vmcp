@@ -36,6 +36,7 @@ use rmcp::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use vmcp_graphql::{build_schema_with_prompts, SchemaLimits};
 use vmcp_upstream::UpstreamPool;
 
 pub use tasks::RUN_TASK_TOOL;
@@ -99,6 +100,10 @@ struct Inner {
     peers: Arc<DashMap<u64, Peer<RoleServer>>>,
     /// Monotonic id generator for `peers` keys.
     peer_seq: Arc<AtomicU64>,
+    /// Limits used when rebuilding a caller-scoped GraphQL schema (G25).
+    schema_limits: SchemaLimits,
+    /// Include `{server}__{prompt}` in GraphQL when `[proxy]` is on.
+    include_upstream_prompts: bool,
 }
 
 /// The gated `run_task` tool plus its SQLite-backed task runner.
@@ -284,6 +289,19 @@ impl VmcpServer {
         skills: SkillsHandle,
         tasks: Option<Arc<TaskRunner>>,
     ) -> Self {
+        Self::with_tasks_and_schema(schema, pool, skills, tasks, SchemaLimits::default(), false)
+    }
+
+    /// [`with_tasks`] plus the GraphQL limits / proxy-prompt flag used to
+    /// rebuild a caller-scoped schema when `upstream:` whitelist mode is on.
+    pub fn with_tasks_and_schema(
+        schema: SchemaHandle,
+        pool: Arc<UpstreamPool>,
+        skills: SkillsHandle,
+        tasks: Option<Arc<TaskRunner>>,
+        schema_limits: SchemaLimits,
+        include_upstream_prompts: bool,
+    ) -> Self {
         let tasks = tasks.map(|runner| RunTaskTool {
             runner,
             tool: build_run_task_tool(),
@@ -296,6 +314,8 @@ impl VmcpServer {
                 tasks,
                 peers: Arc::new(DashMap::new()),
                 peer_seq: Arc::new(AtomicU64::new(0)),
+                schema_limits,
+                include_upstream_prompts,
             }),
             tool_router: Self::tool_router(),
         }
@@ -379,6 +399,34 @@ impl VmcpServer {
     /// Task runner when native MCP tasks are enabled.
     pub fn task_runner(&self) -> Option<Arc<TaskRunner>> {
         self.inner.tasks.as_ref().map(|t| t.runner.clone())
+    }
+
+    /// GraphQL schema containing only namespaces the caller may see (G25).
+    fn scoped_schema(&self, policy: &vmcp_auth::ScopePolicy) -> Arc<Schema> {
+        let entries: Vec<_> = self
+            .inner
+            .pool
+            .all_resolved()
+            .into_iter()
+            .filter(|(name, _)| policy.catalog_allows_upstream(name))
+            .collect();
+        let prompts = prompt_source_handlers(
+            self.inner.skills.clone(),
+            self.inner.pool.clone(),
+            self.inner.include_upstream_prompts,
+        );
+        match build_schema_with_prompts(
+            entries,
+            self.inner.pool.clone(),
+            self.inner.schema_limits,
+            Some(prompts),
+        ) {
+            Ok(schema) => Arc::new(schema),
+            Err(e) => {
+                tracing::error!(error = %e, "scoped GraphQL schema build failed; using full schema");
+                self.inner.schema.load_full()
+            }
+        }
     }
 
     #[tool(
@@ -477,7 +525,11 @@ Args: `query` (required GraphQL document), `variables` (optional JSON object), `
             ))]));
         }
 
-        let schema_guard = self.inner.schema.load_full();
+        let policy = scope_policy_from_request_context(&context);
+        let schema_guard = match policy.as_ref() {
+            Some(p) if p.filters_catalog() => self.scoped_schema(p),
+            _ => self.inner.schema.load_full(),
+        };
         let mut req = Request::new(args.query);
         if let Some(vars) = args.variables {
             req = req.variables(async_graphql::Variables::from_json(vars));
@@ -485,7 +537,7 @@ Args: `query` (required GraphQL document), `variables` (optional JSON object), `
         if let Some(op) = args.operation_name {
             req = req.operation_name(op);
         }
-        if let Some(policy) = scope_policy_from_request_context(&context) {
+        if let Some(policy) = policy {
             req = req.data(policy);
         }
         if let Some(caller) = caller_identity_from_request_context(&context) {

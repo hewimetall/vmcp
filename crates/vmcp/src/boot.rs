@@ -114,11 +114,21 @@ pub async fn boot(cfg: Settings) -> Result<BootContext> {
         None
     };
 
-    let vmcp_server = VmcpServer::with_tasks(
+    let vmcp_server = VmcpServer::with_tasks_and_schema(
         schema_swap.clone(),
         pool.clone(),
         skills.clone(),
         task_runner,
+        SchemaLimits {
+            max_depth: cfg.gql.max_depth,
+            max_complexity: cfg.gql.max_complexity,
+            max_response_bytes: cfg.gql.max_response_bytes,
+            response_cap_mode: match cfg.gql.response_cap_mode {
+                CapMode::Error => GqlCapMode::Error,
+                CapMode::Truncate => GqlCapMode::Truncate,
+            },
+        },
+        cfg.proxy.enabled,
     );
 
     // Notification forwarder is started from `serve_http` after

@@ -23,7 +23,7 @@ use tracing::warn;
 use vmcp_upstream::UpstreamPool;
 
 use crate::prompt_proxy::{
-    catalogue_from_pool, inject_into_result, normalize_prompt_args, NAME_SEP,
+    catalogue_from_pool_filtered, inject_into_result, normalize_prompt_args, NAME_SEP,
 };
 
 #[derive(Clone)]
@@ -62,25 +62,13 @@ impl ServerHandler for ProxyServer {
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _ctx: RequestContext<RoleServer>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        let all = self.pool.all_resolved();
-        let mut tools: Vec<Tool> = Vec::with_capacity(all.iter().map(|(_, v)| v.len()).sum());
-        for (server, list) in all {
-            let server_desc = self.pool.description_of(&server);
-            for t in list {
-                let prefixed = format!("{server}{NAME_SEP}{}", t.name);
-                let description =
-                    build_description(&server, server_desc.as_deref(), t.description.as_deref());
-                let schema = into_schema_arc(&prefixed, &t.input_schema);
-                tools.push(Tool::new_with_raw(
-                    prefixed,
-                    description.map(Into::into),
-                    schema,
-                ));
-            }
-        }
-        Ok(ListToolsResult::with_all_items(tools))
+        let policy = crate::scope_policy_from_request_context(&ctx);
+        Ok(ListToolsResult::with_all_items(tools_from_pool(
+            &self.pool,
+            policy.as_ref(),
+        )))
     }
 
     async fn call_tool(
@@ -146,17 +134,18 @@ impl ServerHandler for ProxyServer {
     async fn list_prompts(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _ctx: RequestContext<RoleServer>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<ListPromptsResult, McpError> {
-        Ok(ListPromptsResult::with_all_items(catalogue_from_pool(
-            &self.pool,
-        )))
+        let policy = crate::scope_policy_from_request_context(&ctx);
+        Ok(ListPromptsResult::with_all_items(
+            catalogue_from_pool_filtered(&self.pool, policy.as_ref()),
+        ))
     }
 
     async fn get_prompt(
         &self,
         request: GetPromptRequestParams,
-        _ctx: RequestContext<RoleServer>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<GetPromptResponse, McpError> {
         let (server, prompt) = request.name.split_once(NAME_SEP).ok_or_else(|| {
             McpError::invalid_params(
@@ -167,6 +156,15 @@ impl ServerHandler for ProxyServer {
                 None,
             )
         })?;
+
+        if let Some(policy) = crate::scope_policy_from_request_context(&ctx) {
+            if !policy.catalog_allows_upstream(server) {
+                return Err(McpError::invalid_params(
+                    format!("unknown prompt: {}", request.name),
+                    None,
+                ));
+            }
+        }
 
         let upstream = self
             .pool
@@ -182,6 +180,31 @@ impl ServerHandler for ProxyServer {
         let tools = self.pool.resolved(server).unwrap_or_default();
         Ok(inject_into_result(server, &tools, upstream).into())
     }
+}
+
+fn tools_from_pool(pool: &UpstreamPool, policy: Option<&vmcp_auth::ScopePolicy>) -> Vec<Tool> {
+    let all = pool.all_resolved();
+    let mut tools: Vec<Tool> = Vec::with_capacity(all.iter().map(|(_, v)| v.len()).sum());
+    for (server, list) in all {
+        if let Some(p) = policy {
+            if !p.catalog_allows_upstream(&server) {
+                continue;
+            }
+        }
+        let server_desc = pool.description_of(&server);
+        for t in list {
+            let prefixed = format!("{server}{NAME_SEP}{}", t.name);
+            let description =
+                build_description(&server, server_desc.as_deref(), t.description.as_deref());
+            let schema = into_schema_arc(&prefixed, &t.input_schema);
+            tools.push(Tool::new_with_raw(
+                prefixed,
+                description.map(Into::into),
+                schema,
+            ));
+        }
+    }
+    tools
 }
 
 fn build_description(
@@ -207,5 +230,47 @@ fn into_schema_arc(name: &str, raw: &Value) -> Arc<JsonObject> {
             );
             Arc::new(JsonObject::new())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vmcp_notify::Bus;
+    use vmcp_registry::TaskSupportHint;
+    use vmcp_upstream::ResolvedTool;
+
+    #[test]
+    fn tools_from_pool_hides_foreign_upstreams() {
+        let bus = Bus::new(8);
+        let pool = UpstreamPool::empty_for_test(bus);
+        pool.insert_synthetic_for_test(
+            "alpha",
+            None,
+            vec![ResolvedTool {
+                server: "alpha".into(),
+                name: "echo".into(),
+                description: None,
+                input_schema: serde_json::json!({"type": "object"}),
+                read_only: true,
+                task_support: TaskSupportHint::Forbidden,
+            }],
+        );
+        pool.insert_synthetic_for_test(
+            "beta",
+            None,
+            vec![ResolvedTool {
+                server: "beta".into(),
+                name: "echo".into(),
+                description: None,
+                input_schema: serde_json::json!({"type": "object"}),
+                read_only: true,
+                task_support: TaskSupportHint::Forbidden,
+            }],
+        );
+        let policy = vmcp_auth::ScopePolicy::parse("mcp:use upstream:alpha");
+        let tools = tools_from_pool(&pool, Some(&policy));
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "alpha__echo");
     }
 }

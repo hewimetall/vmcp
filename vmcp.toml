@@ -87,6 +87,8 @@ gc_interval_secs = 30
 [proxy]
 enabled  = true
 mcp_path = "/mcp-proxy"
+# Encode /mcp-proxy tool results as GCF (https://gcformat.com/). Independent of [gql].gcf.
+# gcf = true
 
 # Optional native MCP Tasks (SEP-1686). Off by default.
 # When enabled, vmcp registers `run_task` for upstream tools with

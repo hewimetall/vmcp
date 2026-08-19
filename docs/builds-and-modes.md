@@ -83,6 +83,7 @@ enabled = false
 | `upstream.spawn_timeout_ms` | `VMCP_UPSTREAM__SPAWN_TIMEOUT_MS` |
 | `auth.enabled` | `VMCP_AUTH__ENABLED` |
 | `gql.gcf` | `VMCP_GQL__GCF` |
+| `proxy.gcf` | `VMCP_PROXY__GCF` |
 
 Итоговый конфиг: `vmcp print-config`.
 
@@ -137,16 +138,25 @@ Env: `VMCP_TASKS__ENABLED=true`, `VMCP_TASKS__DB_PATH=…`.
 
 ---
 
-## GCF output (`query_graphql`, опционально)
+## GCF output (опционально, два флага)
 
-По умолчанию `query_graphql` отдаёт стандартный GraphQL JSON `{ "data": ..., "errors": ... }`. Флаг `[gql].gcf` переключает **текст tool result** на [GCF](https://gcformat.com/) generic profile — тот же envelope, меньше токенов. Агенты читают GCF без priming. Если энкодер отклонит значение (например integer вне i64), vmcp откатится на JSON.
+[GCF](https://gcformat.com/) generic profile вместо JSON в MCP tool text. Флаги **независимые**, оба off by default. Энкодер отклонил значение (integer вне i64) → откат на JSON.
+
+| Флаг | Env | Где |
+| ---- | --- | --- |
+| `[gql].gcf` | `VMCP_GQL__GCF` | `/mcp` `query_graphql` envelope |
+| `[proxy].gcf` | `VMCP_PROXY__GCF` | `/mcp-proxy` `{server}__{tool}` results |
 
 ```toml
 [gql]
-gcf = true
+gcf = true          # только GraphQL /mcp
+
+[proxy]
+enabled = true
+gcf = true          # только /mcp-proxy; не требует [gql].gcf
 ```
 
-Env: `VMCP_GQL__GCF=true`. Когда флаг включён, `tools/list` и server instructions явно говорят, что ответ — GCF, не JSON. GraphQL-схема и поле `{ json }` внутри документа не меняются — компактируется только MCP text payload.
+`/mcp-proxy`: JSON text или `structuredContent` → GCF; plain-text ошибки не трогаем. Когда флаг включён, `tools/list` и server instructions говорят, что ответ — GCF.
 
 ---
 

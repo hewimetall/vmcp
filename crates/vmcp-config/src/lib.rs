@@ -144,6 +144,11 @@ pub struct ProxyConfig {
     pub enabled: bool,
     #[serde(default = "ProxyConfig::default_mcp_path")]
     pub mcp_path: String,
+    /// Encode `/mcp-proxy` tool results as GCF generic profile
+    /// (<https://gcformat.com/>) instead of the upstream JSON/text.
+    /// Independent of `[gql].gcf`. Off by default. No-op unless `enabled`.
+    #[serde(default)]
+    pub gcf: bool,
 }
 
 impl Default for ProxyConfig {
@@ -151,6 +156,7 @@ impl Default for ProxyConfig {
         Self {
             enabled: false,
             mcp_path: Self::default_mcp_path(),
+            gcf: false,
         }
     }
 }
@@ -883,6 +889,7 @@ token_ttl_secs = 3600
         let s = load(Some(&tmp.0)).expect("loads");
         assert!(!s.proxy.enabled);
         assert_eq!(s.proxy.mcp_path, "/mcp-proxy");
+        assert!(!s.proxy.gcf);
     }
 
     #[test]
@@ -923,6 +930,33 @@ token_ttl_secs = 3600
         let s = load(Some(&tmp.0)).expect("loads");
         assert!(s.proxy.enabled);
         assert_eq!(s.proxy.mcp_path, "/mcp-raw");
+        assert!(!s.proxy.gcf);
+    }
+
+    #[test]
+    fn proxy_gcf_flag_independent_of_gql() {
+        let tmp = write_tmp(
+            r#"
+[gql]
+max_depth = 10
+max_complexity = 1000
+gcf = false
+
+[proxy]
+enabled = true
+gcf = true
+
+[auth]
+master_password_argon2 = "$argon2id$v=19$m=19456,t=2,p=1$YWFhYWFhYWFhYWFhYWFhYQ$dG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4"
+jwt_kid = "k1"
+jwks_rotate_secs = 86400
+token_ttl_secs = 3600
+"#,
+        );
+        let s = load(Some(&tmp.0)).expect("loads");
+        assert!(!s.gql.gcf);
+        assert!(s.proxy.enabled);
+        assert!(s.proxy.gcf);
     }
 
     #[test]

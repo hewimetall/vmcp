@@ -16,6 +16,7 @@
 | [clients.md](clients.md) | Cursor HTTP+OAuth, скриптовые MCP/HTTP-клиенты, vmcp-lite для локального stdio host |
 | [bench.md](bench.md) | Опциональный Python-инструмент: замер пакетирования LLM-запросов `query_graphql` |
 | [aggregation.md](aggregation.md) | Как работает GraphQL-агрегация поверх upstream tools |
+| [mcp-2026-07-28.md](mcp-2026-07-28.md) | Оценка spec 2026-07-28, remap сессии, паттерны шлюзов (dual-profile) |
 
 Быстрые ссылки из корня репозитория:
 

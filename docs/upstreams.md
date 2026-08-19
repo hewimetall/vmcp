@@ -18,6 +18,7 @@
 | `[upstream].spawn_timeout_ms` | `30000` | Бюджет запуска |
 | `[upstream].call_timeout_ms` | `60000` | Бюджет одного вызова |
 | `[proxy].enabled` | off | Upstream-промпты + `/mcp-proxy` |
+| `[proxy].gcf` | off | GCF вместо JSON на `/mcp-proxy` (не зависит от `[gql].gcf`) |
 
 Env: `VMCP_REGISTRY_PATH`, `VMCP_SPEC_DIR`, `VMCP_LOCK_PATH`, `VMCP_SKILLS_DIR`, …
 Демо-стенд: [`demo/vmcp.toml`](../demo/vmcp.toml) + [`demo/README.md`](../demo/README.md)

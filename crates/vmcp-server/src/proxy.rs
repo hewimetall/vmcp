@@ -29,11 +29,17 @@ use crate::prompt_proxy::{
 #[derive(Clone)]
 pub struct ProxyServer {
     pool: Arc<UpstreamPool>,
+    /// `[proxy].gcf` — encode upstream tool results as GCF generic profile.
+    gcf: bool,
 }
 
 impl ProxyServer {
     pub fn new(pool: Arc<UpstreamPool>) -> Self {
-        Self { pool }
+        Self::with_gcf(pool, false)
+    }
+
+    pub fn with_gcf(pool: Arc<UpstreamPool>, gcf: bool) -> Self {
+        Self { pool, gcf }
     }
 }
 
@@ -42,6 +48,17 @@ impl ServerHandler for ProxyServer {
         let mut impl_info = Implementation::from_build_env();
         impl_info.name = "vmcp-proxy".into();
         impl_info.version = env!("CARGO_PKG_VERSION").into();
+        let mut instructions = String::from(
+            "vmcp proxy: transparent passthrough of upstream MCP tools and prompts. \
+             Names are prefixed `{server}__{name}` to disambiguate across upstreams. \
+             Use `tools/list` / `prompts/list` to discover, then call/get by the \
+             prefixed name. Each prompts/get starts with a GraphQL routing table — \
+             call tools via `query_graphql` on the main `/mcp` endpoint when following \
+             playbooks (raw `tools/call` on this endpoint remains available).",
+        );
+        if self.gcf {
+            instructions.push_str(crate::gcf_out::GCF_PROXY_INSTRUCTIONS);
+        }
         ServerInfo::new(
             ServerCapabilities::builder()
                 .enable_tools()
@@ -49,14 +66,7 @@ impl ServerHandler for ProxyServer {
                 .build(),
         )
         .with_server_info(impl_info)
-        .with_instructions(
-            "vmcp proxy: transparent passthrough of upstream MCP tools and prompts. \
-             Names are prefixed `{server}__{name}` to disambiguate across upstreams. \
-             Use `tools/list` / `prompts/list` to discover, then call/get by the \
-             prefixed name. Each prompts/get starts with a GraphQL routing table — \
-             call tools via `query_graphql` on the main `/mcp` endpoint when following \
-             playbooks (raw `tools/call` on this endpoint remains available).",
-        )
+        .with_instructions(instructions)
     }
 
     async fn list_tools(
@@ -68,6 +78,7 @@ impl ServerHandler for ProxyServer {
         Ok(ListToolsResult::with_all_items(tools_from_pool(
             &self.pool,
             policy.as_ref(),
+            self.gcf,
         )))
     }
 
@@ -110,7 +121,7 @@ impl ServerHandler for ProxyServer {
         self.pool
             .call(server, tool, args, caller.as_ref())
             .await
-            .map(Into::into)
+            .map(|r| crate::gcf_out::encode_call_tool_result(r, self.gcf).into())
             .map_err(|e| {
                 McpError::internal_error(format!("upstream `{server}` call failed: {e}"), None)
             })
@@ -121,8 +132,11 @@ impl ServerHandler for ProxyServer {
         let resolved = self.pool.resolved(server)?;
         let t = resolved.into_iter().find(|t| t.name == tool)?;
         let server_desc = self.pool.description_of(server);
-        let description =
+        let mut description =
             build_description(server, server_desc.as_deref(), t.description.as_deref());
+        if self.gcf {
+            crate::gcf_out::annotate_proxy_tool_description(&mut description);
+        }
         let schema = into_schema_arc(name, &t.input_schema);
         Some(Tool::new_with_raw(
             name.to_string(),
@@ -182,7 +196,11 @@ impl ServerHandler for ProxyServer {
     }
 }
 
-fn tools_from_pool(pool: &UpstreamPool, policy: Option<&vmcp_auth::ScopePolicy>) -> Vec<Tool> {
+fn tools_from_pool(
+    pool: &UpstreamPool,
+    policy: Option<&vmcp_auth::ScopePolicy>,
+    gcf: bool,
+) -> Vec<Tool> {
     let all = pool.all_resolved();
     let mut tools: Vec<Tool> = Vec::with_capacity(all.iter().map(|(_, v)| v.len()).sum());
     for (server, list) in all {
@@ -194,8 +212,11 @@ fn tools_from_pool(pool: &UpstreamPool, policy: Option<&vmcp_auth::ScopePolicy>)
         let server_desc = pool.description_of(&server);
         for t in list {
             let prefixed = format!("{server}{NAME_SEP}{}", t.name);
-            let description =
+            let mut description =
                 build_description(&server, server_desc.as_deref(), t.description.as_deref());
+            if gcf {
+                crate::gcf_out::annotate_proxy_tool_description(&mut description);
+            }
             let schema = into_schema_arc(&prefixed, &t.input_schema);
             tools.push(Tool::new_with_raw(
                 prefixed,
@@ -269,8 +290,17 @@ mod tests {
             }],
         );
         let policy = vmcp_auth::ScopePolicy::parse("mcp:use upstream:alpha");
-        let tools = tools_from_pool(&pool, Some(&policy));
+        let tools = tools_from_pool(&pool, Some(&policy), false);
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "alpha__echo");
+        let gcf_tools = tools_from_pool(&pool, Some(&policy), true);
+        assert!(
+            gcf_tools[0]
+                .description
+                .as_deref()
+                .unwrap()
+                .contains("GCF generic profile"),
+            "proxy gcf should annotate listed tools"
+        );
     }
 }

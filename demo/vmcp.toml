@@ -17,6 +17,9 @@ notif_ring_max = 10000
 [gql]
 max_depth      = 10
 max_complexity = 1000
+# Encode query_graphql tool text as GCF (https://gcformat.com/) instead of JSON.
+# Off by default. Env: VMCP_GQL__GCF=true
+# gcf = true
 
 [upstream]
 spawn_timeout_ms = 120000
@@ -41,3 +44,5 @@ gc_interval_secs = 30
 [proxy]
 enabled  = true
 mcp_path = "/mcp-proxy"
+# Encode /mcp-proxy tool results as GCF. Independent of [gql].gcf. Env: VMCP_PROXY__GCF=true
+# gcf = true

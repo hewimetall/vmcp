@@ -109,3 +109,11 @@ MCP-эндпоинт; секреты передавайте через пере�
   "bearer": "${REMOTE_MCP_TOKEN}"
 }
 ```
+
+## Формат ответа `query_graphql`
+
+MCP tool text по умолчанию — компактный JSON envelope. Опциональный флаг
+`[gql].gcf = true` (env `VMCP_GQL__GCF`) кодирует тот же envelope как
+[GCF](https://gcformat.com/) generic profile. Отдельный флаг `[proxy].gcf`
+(env `VMCP_PROXY__GCF`) делает то же для `/mcp-proxy`.
+См. [builds-and-modes.md](builds-and-modes.md#gcf-output-опционально-два-флага).

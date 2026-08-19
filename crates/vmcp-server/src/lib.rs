@@ -55,6 +55,7 @@ pub use tasks::{collect_task_allowlist, TaskError, TaskRunner, TaskStore};
 pub mod proxy;
 pub use proxy::ProxyServer;
 
+pub mod gcf_out;
 pub mod graphql_inject;
 pub mod prompt_catalog;
 pub mod prompt_proxy;
@@ -95,6 +96,9 @@ struct Inner {
     /// Native MCP Tasks wiring. `Some` only when `[tasks].enabled` and the
     /// allowlist is non-empty — gates both `run_task` and the `tasks` capability.
     tasks: Option<RunTaskTool>,
+    /// Encode `query_graphql` tool text as GCF generic profile when true
+    /// (`[gql].gcf`). Off by default — JSON envelope.
+    gcf: bool,
     /// Connected client sessions, captured on `initialized`. The notification
     /// forwarder fans upstream MCP events out to these peers.
     peers: Arc<DashMap<u64, Peer<RoleServer>>>,
@@ -276,20 +280,30 @@ pub struct QueryGraphqlArgs {
 #[tool_router]
 impl VmcpServer {
     pub fn new(schema: SchemaHandle, pool: Arc<UpstreamPool>, skills: SkillsHandle) -> Self {
-        Self::with_tasks(schema, pool, skills, None)
+        Self::with_tasks(schema, pool, skills, None, false)
     }
 
     /// Like [`new`](Self::new) but wires the native-task `run_task` runner.
     /// Pass `Some(runner)` only when `[tasks].enabled` and the allowlist is
     /// non-empty — it registers `run_task` and turns on the server `tasks`
-    /// capability.
+    /// capability. `gcf` gates GCF encoding of `query_graphql` tool text
+    /// (`[gql].gcf`).
     pub fn with_tasks(
         schema: SchemaHandle,
         pool: Arc<UpstreamPool>,
         skills: SkillsHandle,
         tasks: Option<Arc<TaskRunner>>,
+        gcf: bool,
     ) -> Self {
-        Self::with_tasks_and_schema(schema, pool, skills, tasks, SchemaLimits::default(), false)
+        Self::with_tasks_and_schema(
+            schema,
+            pool,
+            skills,
+            tasks,
+            SchemaLimits::default(),
+            false,
+            gcf,
+        )
     }
 
     /// [`with_tasks`] plus the GraphQL limits / proxy-prompt flag used to
@@ -301,6 +315,7 @@ impl VmcpServer {
         tasks: Option<Arc<TaskRunner>>,
         schema_limits: SchemaLimits,
         include_upstream_prompts: bool,
+        gcf: bool,
     ) -> Self {
         let tasks = tasks.map(|runner| RunTaskTool {
             runner,
@@ -312,6 +327,7 @@ impl VmcpServer {
                 pool,
                 skills,
                 tasks,
+                gcf,
                 peers: Arc::new(DashMap::new()),
                 peer_seq: Arc::new(AtomicU64::new(0)),
                 schema_limits,
@@ -547,7 +563,7 @@ Args: `query` (required GraphQL document), `variables` (optional JSON object), `
         let body = serde_json::to_value(&resp)
             .unwrap_or_else(|e| json!({"errors": [{"message": format!("serialize: {e}")}]}));
         Ok(CallToolResult::success(vec![ContentBlock::text(
-            body.to_string(),
+            gcf_out::render_tool_text(&body, self.inner.gcf),
         )]))
     }
 }
@@ -613,7 +629,7 @@ impl ServerHandler for VmcpServer {
                 .get_or_insert_with(ExtensionCapabilities::new)
                 .insert(TASKS_EXTENSION_ID.to_string(), JsonObject::new());
         }
-        let instructions: String = if self.inner.tasks.is_some() {
+        let mut instructions: String = if self.inner.tasks.is_some() {
             "vmcp: Virtual MCP gateway.\n\
              \n\
              Tools:\n\
@@ -648,6 +664,9 @@ impl ServerHandler for VmcpServer {
              introspection."
                 .to_string()
         };
+        if self.inner.gcf {
+            instructions.push_str(gcf_out::GCF_INSTRUCTIONS);
+        }
         ServerInfo::new(caps)
             .with_server_info(impl_info)
             .with_instructions(instructions)
@@ -666,6 +685,11 @@ impl ServerHandler for VmcpServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
         let mut tools = self.tool_router.list_all();
+        if self.inner.gcf {
+            for t in &mut tools {
+                gcf_out::annotate_query_graphql_tool(t);
+            }
+        }
         if let Some(t) = &self.inner.tasks {
             tools.push(t.tool.clone());
         }
@@ -676,7 +700,11 @@ impl ServerHandler for VmcpServer {
         if name == RUN_TASK_TOOL {
             return self.inner.tasks.as_ref().map(|d| d.tool.clone());
         }
-        self.tool_router.get(name).cloned()
+        let mut tool = self.tool_router.get(name).cloned()?;
+        if self.inner.gcf {
+            gcf_out::annotate_query_graphql_tool(&mut tool);
+        }
+        Some(tool)
     }
 
     async fn call_tool(

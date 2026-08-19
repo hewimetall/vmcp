@@ -129,6 +129,7 @@ pub async fn boot(cfg: Settings) -> Result<BootContext> {
             },
         },
         cfg.proxy.enabled,
+        cfg.gql.gcf,
     );
 
     // Notification forwarder is started from `serve_http` after

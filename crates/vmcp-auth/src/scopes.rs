@@ -153,11 +153,6 @@ impl ScopePolicy {
         Err("scope lacks mcp:read / mcp:use".into())
     }
 
-    /// Whether this policy may use the given upstream at all (call grants).
-    pub fn allows_upstream(&self, server: &str) -> bool {
-        self.upstreams.is_empty() || self.upstreams.contains(server)
-    }
-
     /// Whitelist mode without `mcp:admin`: discovery surfaces must hide
     /// upstreams the caller cannot use (G25).
     pub fn filters_catalog(&self) -> bool {
@@ -211,8 +206,6 @@ mod tests {
         let p = ScopePolicy::parse("mcp:use upstream:time");
         assert!(p.authorize("time", "now", false).is_ok());
         assert!(p.authorize("postgres", "query", false).is_err());
-        assert!(p.allows_upstream("time"));
-        assert!(!p.allows_upstream("postgres"));
         assert!(p.filters_catalog());
         assert!(p.catalog_allows_upstream("time"));
         assert!(!p.catalog_allows_upstream("postgres"));

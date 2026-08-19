@@ -22,6 +22,9 @@ notif_ring_max = 10000
 [gql]
 max_depth      = 10
 max_complexity = 1000
+# Encode query_graphql tool text as GCF (https://gcformat.com/) instead of JSON.
+# Off by default. Agents read GCF natively; typically 50–70% fewer tokens.
+# gcf = true
 
 [upstream]
 # Cold uvx/npx first spawn can exceed 30s — keep both keys here (do not set

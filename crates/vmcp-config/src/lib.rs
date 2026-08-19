@@ -236,6 +236,11 @@ pub struct GqlConfig {
     pub max_response_bytes: usize,
     #[serde(default)]
     pub response_cap_mode: CapMode,
+    /// Encode `query_graphql` tool text as GCF generic profile
+    /// (<https://gcformat.com/>) instead of JSON. Off by default.
+    /// Agents read GCF natively; typical GraphQL envelopes are 50–70% smaller.
+    #[serde(default)]
+    pub gcf: bool,
 }
 
 fn default_max_response_bytes() -> usize {
@@ -249,6 +254,7 @@ impl Default for GqlConfig {
             max_complexity: 1000,
             max_response_bytes: default_max_response_bytes(),
             response_cap_mode: CapMode::default(),
+            gcf: false,
         }
     }
 }
@@ -860,6 +866,7 @@ token_ttl_secs = 3600
         // Defaults kick in when neither field is set in TOML.
         assert_eq!(s.gql.max_response_bytes, 1_048_576);
         assert_eq!(s.gql.response_cap_mode, CapMode::Error);
+        assert!(!s.gql.gcf);
     }
 
     #[test]
@@ -1165,6 +1172,27 @@ token_ttl_secs = 3600
         let s = load(Some(&tmp.0)).expect("loads");
         assert_eq!(s.gql.max_response_bytes, 2_097_152);
         assert_eq!(s.gql.response_cap_mode, CapMode::Truncate);
+        assert!(!s.gql.gcf);
+    }
+
+    #[test]
+    fn gql_gcf_flag_reads_from_toml() {
+        let tmp = write_tmp(
+            r#"
+[gql]
+max_depth = 10
+max_complexity = 1000
+gcf = true
+
+[auth]
+master_password_argon2 = "$argon2id$v=19$m=19456,t=2,p=1$YWFhYWFhYWFhYWFhYWFhYQ$dG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4"
+jwt_kid = "k1"
+jwks_rotate_secs = 86400
+token_ttl_secs = 3600
+"#,
+        );
+        let s = load(Some(&tmp.0)).expect("loads");
+        assert!(s.gql.gcf);
     }
 
     #[test]

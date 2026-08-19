@@ -35,6 +35,8 @@ parking_lot = { workspace = true }
 chrono = { workspace = true }
 rusqlite = { workspace = true }
 uuid = { workspace = true }
+# Optional compact query_graphql wire format (gated by [gql].gcf).
+gcf = "3.0"
 
 [dev-dependencies]
 tempfile = "3"

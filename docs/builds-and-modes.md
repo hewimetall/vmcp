@@ -82,6 +82,7 @@ enabled = false
 | `auth.master_password_argon2` | `VMCP_AUTH__MASTER_PASSWORD_ARGON2` |
 | `upstream.spawn_timeout_ms` | `VMCP_UPSTREAM__SPAWN_TIMEOUT_MS` |
 | `auth.enabled` | `VMCP_AUTH__ENABLED` |
+| `gql.gcf` | `VMCP_GQL__GCF` |
 
 Итоговый конфиг: `vmcp print-config`.
 
@@ -133,6 +134,19 @@ max_concurrent = 16
 GraphQL (`query_graphql`) остаётся **sync**. Через `run_task` — только allowlisted task-capable tools. По умолчанию выключено.
 
 Env: `VMCP_TASKS__ENABLED=true`, `VMCP_TASKS__DB_PATH=…`.
+
+---
+
+## GCF output (`query_graphql`, опционально)
+
+По умолчанию `query_graphql` отдаёт стандартный GraphQL JSON `{ "data": ..., "errors": ... }`. Флаг `[gql].gcf` переключает **текст tool result** на [GCF](https://gcformat.com/) generic profile — тот же envelope, меньше токенов. Агенты читают GCF без priming. Если энкодер отклонит значение (например integer вне i64), vmcp откатится на JSON.
+
+```toml
+[gql]
+gcf = true
+```
+
+Env: `VMCP_GQL__GCF=true`. Когда флаг включён, `tools/list` и server instructions явно говорят, что ответ — GCF, не JSON. GraphQL-схема и поле `{ json }` внутри документа не меняются — компактируется только MCP text payload.
 
 ---
 

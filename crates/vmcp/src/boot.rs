@@ -119,6 +119,7 @@ pub async fn boot(cfg: Settings) -> Result<BootContext> {
         pool.clone(),
         skills.clone(),
         task_runner,
+        cfg.gql.gcf,
     );
 
     // Notification forwarder is started from `serve_http` after

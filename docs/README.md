@@ -7,6 +7,7 @@
 | [deployment.md](deployment.md) | Развертывание через GHCR: Compose + Caddy, bare metal, TLS, переменные окружения, чеклист |
 | [authentication.md](authentication.md) | Поток OAuth 2.1, master password, static tokens, Authentik hop trust, dev-режим без auth |
 | [adr/0001-forward-auth-trust-and-identity-propagation.md](adr/0001-forward-auth-trust-and-identity-propagation.md) | ADR: trust для `X-authentik-*` + `X-Vmcp-*` identity на HTTP upstream |
+| [adr/0002-per-caller-catalog-visibility.md](adr/0002-per-caller-catalog-visibility.md) | ADR: каталог по `upstream:<name>` whitelist (G25), не только вызовы |
 | [builds-and-modes.md](builds-and-modes.md) | Cargo features, release-бинарники, HTTP gateway, опциональный `[tasks]` |
 | [upstreams.md](upstreams.md) | Регистрация upstream-сервисов, tools (sidecar + lock) и prompts |
 | [tasks.md](tasks.md) | Нативные MCP Tasks (`run_task`), SQLite store, allowlist, поток SEP-1686 |

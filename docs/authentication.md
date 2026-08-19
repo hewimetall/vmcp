@@ -208,7 +208,7 @@ curl -H "Authorization: Bearer vmcp_…" https://gateway.example.com/mcp
 > `searchPrompts` / `__type` (namespace-поля Query/Mutation), GraphQL
 > `notifications.source`, и `/mcp-proxy` `tools/list` + `prompts/list`.
 > `mcp:admin` видит полный каталог. Без `upstream:*` токенов каталог по-прежнему
-> полный (как и call grants).
+> полный (как и call grants). Контракт: [ADR 0002](adr/0002-per-caller-catalog-visibility.md).
 
 > **G30:** DCR / OAuth consent **не** выдают `mcp:admin` (strips). Admin только через
 > `pre-reg` / `/api/v1/tokens` с operator Bearer.

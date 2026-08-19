@@ -12,8 +12,8 @@
 
 mod common;
 
-use rmcp::ClientHandler;
 use rmcp::model::*;
+use rmcp::ClientHandler;
 use vmcp_auth::static_tokens::{append_atomic, generate_entry};
 
 const DEMO_ARGON2: &str = "$argon2id$v=19$m=19456,t=2,p=1$EKXF2yiUMT1injIS9ueldA$1Pra/zoGSKVIkZq1fCg0Hd2ceJuQn1H4k2lXeKUkMD8";

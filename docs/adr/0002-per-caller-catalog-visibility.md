@@ -63,3 +63,11 @@ group_scopes = { "dayana" = "mcp:use upstream:dayana", "admin" = "mcp:admin" }
 
 Token `mcp:use upstream:dayana` → `{ servers { name } }` is `[dayana]`.  
 Token `mcp:admin` → full `{ servers { name } }`.
+
+## Verification
+
+Same ladder as [clients.md](../clients.md) (`prompts` → `servers` → `search`/`searchPrompts` → `__type`), plus `/mcp-proxy` `tools/list` from [upstreams.md](../upstreams.md) and local YAML from [skills.md](../skills.md):
+
+```bash
+cargo test -p vmcp --test catalog_g25
+```

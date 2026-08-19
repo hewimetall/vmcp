@@ -203,8 +203,12 @@ curl -H "Authorization: Bearer vmcp_…" https://gateway.example.com/mcp
 
 Пример: `--scope 'mcp:use upstream:time'` — агент не вызовет `postgres.*`.
 
-> **G25:** enforce режет **вызовы**. GraphQL schema / `search` / introspection пока могут
-> **показывать** чужие namespaces — не считать scopes полной изоляцией каталога.
+> **G25:** при whitelist (`upstream:<name>` без `mcp:admin`) каталог режется тем же
+> предикатом, что и вызовы: GraphQL `servers` / `search` / `prompts` /
+> `searchPrompts` / `__type` (namespace-поля Query/Mutation), GraphQL
+> `notifications.source`, и `/mcp-proxy` `tools/list` + `prompts/list`.
+> `mcp:admin` видит полный каталог. Без `upstream:*` токенов каталог по-прежнему
+> полный (как и call grants).
 
 > **G30:** DCR / OAuth consent **не** выдают `mcp:admin` (strips). Admin только через
 > `pre-reg` / `/api/v1/tokens` с operator Bearer.

@@ -82,7 +82,9 @@ async fn upstream_scope_blocks_other_server() {
     let dir = common::TempDir::new("vmcp-scope-enforce");
     let tokens = dir.path().join("tokens.json");
     let scoped = generate_entry("agent", Some("mcp:use upstream:alpha")).unwrap();
+    let admin = generate_entry("ops", Some("mcp:admin")).unwrap();
     append_atomic(&tokens, &scoped).unwrap();
+    append_atomic(&tokens, &admin).unwrap();
 
     let registry = serde_json::json!({
         "upstreams": [
@@ -137,6 +139,10 @@ jwks_rotate_secs = 86400
 token_ttl_secs = 3600
 tokens_file = "{tokens}"
 clients_db_path = "{clients}"
+
+[proxy]
+enabled = true
+mcp_path = "/mcp-proxy"
 "#,
             reg = dir.path().join("registry.json").display(),
             lock = dir.path().join("tools.lock.json").display(),
@@ -191,11 +197,124 @@ clients_db_path = "{clients}"
         .expect("beta call returns tool result");
     let denied_text = format!("{denied:?}");
     assert!(
-        denied_text.contains("forbidden") || denied_text.contains("upstream:beta"),
+        denied_text.contains("forbidden")
+            || denied_text.contains("upstream:beta")
+            || denied_text.contains("Unknown field"),
         "beta should be forbidden: {denied_text}"
     );
 
+    let catalog = gql_json(
+        &client,
+        "{ servers { name } search(q: \"echo\") { server tool } }",
+    )
+    .await;
+    let servers = catalog["data"]["servers"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let server_names: Vec<&str> = servers.iter().filter_map(|s| s["name"].as_str()).collect();
+    assert_eq!(
+        server_names,
+        vec!["alpha"],
+        "whitelist catalog must not list beta: {catalog}"
+    );
+    let hits = catalog["data"]["search"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        hits.iter().all(|h| h["server"] == "alpha"),
+        "search leaked foreign upstream: {catalog}"
+    );
+
+    let intro = gql_json(
+        &client,
+        r#"{ __type(name: "Mutation") { fields { name } } }"#,
+    )
+    .await;
+    let intro_fields = intro["data"]["__type"]["fields"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let mut_fields: Vec<&str> = intro_fields
+        .iter()
+        .filter_map(|f| f["name"].as_str())
+        .collect();
+    assert!(
+        mut_fields.contains(&"alpha"),
+        "alpha mutation namespace missing: {intro}"
+    );
+    assert!(
+        !mut_fields.contains(&"beta"),
+        "beta mutation namespace leaked via introspection: {intro}"
+    );
+
+    let proxy = common::connect_client_with_token(
+        NullClient,
+        format!("http://127.0.0.1:{}/mcp-proxy", gw.port),
+        Some(&scoped.token),
+    )
+    .await;
+    let listed = proxy
+        .list_tools(Default::default())
+        .await
+        .expect("proxy list");
+    let names: Vec<String> = listed.tools.iter().map(|t| t.name.to_string()).collect();
+    assert!(
+        names.iter().any(|n| n.starts_with("alpha__")),
+        "proxy list missing alpha: {names:?}"
+    );
+    assert!(
+        names.iter().all(|n| !n.starts_with("beta__")),
+        "proxy list leaked beta: {names:?}"
+    );
+    proxy.cancel().await.ok();
+
+    let admin_client =
+        common::connect_client_with_token(NullClient, gw.mcp_url.clone(), Some(&admin.token)).await;
+    let admin_catalog = gql_json(&admin_client, "{ servers { name } }").await;
+    let admin_servers = admin_catalog["data"]["servers"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let mut admin_names: Vec<&str> = admin_servers
+        .iter()
+        .filter_map(|s| s["name"].as_str())
+        .collect();
+    admin_names.sort();
+    assert_eq!(
+        admin_names,
+        vec!["alpha", "beta"],
+        "mcp:admin must see full catalog: {admin_catalog}"
+    );
+    admin_client.cancel().await.ok();
+
     client.cancel().await.ok();
+}
+
+async fn gql_json(
+    client: &rmcp::service::RunningService<rmcp::RoleClient, NullClient>,
+    query: &str,
+) -> serde_json::Value {
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("query_graphql").with_arguments(
+                serde_json::json!({ "query": query })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
+        .await
+        .expect("query_graphql");
+    for c in &result.content {
+        if let ContentBlock::Text(t) = c {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&t.text) {
+                return v;
+            }
+        }
+    }
+    panic!("query_graphql had no JSON text: {result:?}");
 }
 
 #[derive(Clone, Default)]

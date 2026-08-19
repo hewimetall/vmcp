@@ -64,6 +64,8 @@ pub fn validate_scope_string(scope: &str) -> Result<(), String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopePolicy {
     pub full: bool,
+    /// `mcp:admin` — control-plane plus an unfiltered discovery catalogue.
+    pub admin: bool,
     pub read: bool,
     pub write: bool,
     /// When non-empty, only these upstream names are allowed.
@@ -76,6 +78,7 @@ impl ScopePolicy {
     /// Parse a space-separated OAuth scope string.
     pub fn parse(scope: &str) -> Self {
         let mut full = false;
+        let mut admin = false;
         let mut read = false;
         let mut write = false;
         let mut upstreams = HashSet::new();
@@ -83,7 +86,11 @@ impl ScopePolicy {
 
         for tok in scope.split_whitespace() {
             match tok {
-                "mcp:use" | SCOPE_ADMIN => full = true,
+                "mcp:use" => full = true,
+                SCOPE_ADMIN => {
+                    full = true;
+                    admin = true;
+                }
                 "mcp:read" => read = true,
                 "mcp:write" => {
                     read = true;
@@ -114,6 +121,7 @@ impl ScopePolicy {
 
         Self {
             full,
+            admin,
             read,
             write,
             upstreams,
@@ -145,9 +153,22 @@ impl ScopePolicy {
         Err("scope lacks mcp:read / mcp:use".into())
     }
 
-    /// Whether this policy may use the given upstream at all (for discovery filters).
+    /// Whether this policy may use the given upstream at all (call grants).
     pub fn allows_upstream(&self, server: &str) -> bool {
         self.upstreams.is_empty() || self.upstreams.contains(server)
+    }
+
+    /// Whitelist mode without `mcp:admin`: discovery surfaces must hide
+    /// upstreams the caller cannot use (G25).
+    pub fn filters_catalog(&self) -> bool {
+        !self.admin && !self.upstreams.is_empty()
+    }
+
+    /// Whether `server` may appear in `tools/list`, GraphQL `servers` /
+    /// `search` / prompts, and introspection. `mcp:admin` always sees the
+    /// full catalogue; callers without `upstream:*` tokens also do.
+    pub fn catalog_allows_upstream(&self, server: &str) -> bool {
+        !self.filters_catalog() || self.upstreams.contains(server)
     }
 }
 
@@ -165,7 +186,10 @@ mod tests {
     #[test]
     fn mcp_admin_is_full_access() {
         let p = ScopePolicy::parse("mcp:admin");
+        assert!(p.admin);
         assert!(p.authorize("time", "now", false).is_ok());
+        assert!(!p.filters_catalog());
+        assert!(p.catalog_allows_upstream("postgres"));
     }
 
     #[test]
@@ -189,6 +213,24 @@ mod tests {
         assert!(p.authorize("postgres", "query", false).is_err());
         assert!(p.allows_upstream("time"));
         assert!(!p.allows_upstream("postgres"));
+        assert!(p.filters_catalog());
+        assert!(p.catalog_allows_upstream("time"));
+        assert!(!p.catalog_allows_upstream("postgres"));
+    }
+
+    #[test]
+    fn admin_catalog_unfiltered_even_with_whitelist() {
+        let p = ScopePolicy::parse("mcp:admin upstream:time");
+        assert!(p.authorize("postgres", "query", false).is_err());
+        assert!(!p.filters_catalog());
+        assert!(p.catalog_allows_upstream("postgres"));
+    }
+
+    #[test]
+    fn mcp_use_without_whitelist_shows_full_catalog() {
+        let p = ScopePolicy::parse("mcp:use");
+        assert!(!p.filters_catalog());
+        assert!(p.catalog_allows_upstream("postgres"));
     }
 
     #[test]

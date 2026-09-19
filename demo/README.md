@@ -31,8 +31,9 @@ operate on the [`stand/`](stand/) project. Configuration:
 From the repository root:
 
 ```bash
-# optional for context7:
-# export CONTEXT7_API_KEY=...
+# demo/registry.json interpolates ${CONTEXT7_API_KEY}; unset aborts boot.
+# Empty skips the Context7 Authorization header. Set a real key to use that upstream.
+export CONTEXT7_API_KEY="${CONTEXT7_API_KEY:-}"
 
 ./vmcp --config ./demo/vmcp.toml
 # or:

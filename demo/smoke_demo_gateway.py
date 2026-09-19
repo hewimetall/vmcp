@@ -187,6 +187,9 @@ def wait_health(timeout: float) -> None:
 def gateway_env() -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("RUST_LOG", "info")
+    # load_registry hard-fails on unset ${CONTEXT7_API_KEY} in demo/registry.json.
+    # Empty drops the Context7 bearer (same as a missing token at runtime).
+    env.setdefault("CONTEXT7_API_KEY", "")
     # Prefer JSON from agent-lsp for easier smoke asserts
     env.setdefault("AGENT_LSP_OUTPUT_FORMAT", "json")
     # Ensure common local bins are visible to stdio children

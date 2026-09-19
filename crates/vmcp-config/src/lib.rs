@@ -78,6 +78,25 @@ pub struct Settings {
     /// task state lives in SQLite (`db_path`), same idea as mcp-presentation.
     #[serde(default)]
     pub tasks: TasksConfig,
+
+    /// MCP protocol advertisement (`server/discover` / `initialize` negotiation).
+    /// Off-by-default `[mcp].latest` keeps the gateway on the legacy era
+    /// (through `2025-11-25`) until an operator opts into `2026-07-28`.
+    #[serde(default)]
+    pub mcp: McpProtocolConfig,
+}
+
+/// Feature flag for advertising MCP `2026-07-28` (latest) alongside legacy.
+///
+/// Default off — `server/discover` and `initialize` only list revisions through
+/// `2025-11-25`. Set `latest = true` (or `VMCP_MCP__LATEST=true`) to add
+/// `2026-07-28` to `supportedVersions`. Clients still pick the version per
+/// request; this flag only changes what the gateway advertises and will serve.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct McpProtocolConfig {
+    /// Advertise and serve MCP `2026-07-28` in addition to legacy revisions.
+    #[serde(default)]
+    pub latest: bool,
 }
 
 /// Native MCP Tasks / `run_task` integration (SEP-1686).
@@ -1136,6 +1155,43 @@ token_ttl_secs = 3600
         assert!(!s.tasks.enabled);
         assert_eq!(s.tasks.db_path, PathBuf::from("state/tasks.db"));
         assert_eq!(s.tasks.max_concurrent, 16);
+        assert!(!s.mcp.latest);
+    }
+
+    #[test]
+    fn mcp_latest_explicit_false() {
+        let tmp = write_tmp(
+            r#"
+[mcp]
+latest = false
+
+[auth]
+master_password_argon2 = "$argon2id$v=19$m=19456,t=2,p=1$YWFhYWFhYWFhYWFhYWFhYQ$dG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4"
+jwt_kid = "k1"
+jwks_rotate_secs = 86400
+token_ttl_secs = 3600
+"#,
+        );
+        let s = load(Some(&tmp.0)).expect("loads");
+        assert!(!s.mcp.latest);
+    }
+
+    #[test]
+    fn mcp_latest_reads_override() {
+        let tmp = write_tmp(
+            r#"
+[mcp]
+latest = true
+
+[auth]
+master_password_argon2 = "$argon2id$v=19$m=19456,t=2,p=1$YWFhYWFhYWFhYWFhYWFhYQ$dG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4"
+jwt_kid = "k1"
+jwks_rotate_secs = 86400
+token_ttl_secs = 3600
+"#,
+        );
+        let s = load(Some(&tmp.0)).expect("loads");
+        assert!(s.mcp.latest);
     }
 
     #[test]

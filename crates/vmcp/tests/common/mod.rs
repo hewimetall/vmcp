@@ -76,6 +76,8 @@ pub struct Gateway {
     pub port: u16,
     /// `http://127.0.0.1:{port}/mcp`
     pub mcp_url: String,
+    /// `http://127.0.0.1:{port}/mcp-proxy` (only live when `[proxy].enabled`).
+    pub proxy_url: String,
     _child: Child,
 }
 
@@ -152,6 +154,7 @@ pub async fn spawn_gateway_limited(
     Gateway {
         port,
         mcp_url: format!("{base}/mcp"),
+        proxy_url: format!("{base}/mcp-proxy"),
         _child: child,
     }
 }

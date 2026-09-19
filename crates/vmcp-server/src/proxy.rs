@@ -29,21 +29,37 @@ use crate::prompt_proxy::{
 #[derive(Clone)]
 pub struct ProxyServer {
     pool: Arc<UpstreamPool>,
+    /// Same `[mcp].latest` gate as [`crate::VmcpServer`].
+    latest: bool,
     /// `[proxy].gcf` — encode upstream tool results as GCF generic profile.
     gcf: bool,
 }
 
 impl ProxyServer {
     pub fn new(pool: Arc<UpstreamPool>) -> Self {
-        Self::with_gcf(pool, false)
+        Self::with_latest_and_gcf(pool, false, false)
+    }
+
+    /// Construct with the `[mcp].latest` advertisement flag (GCF off).
+    pub fn with_latest(pool: Arc<UpstreamPool>, latest: bool) -> Self {
+        Self::with_latest_and_gcf(pool, latest, false)
     }
 
     pub fn with_gcf(pool: Arc<UpstreamPool>, gcf: bool) -> Self {
-        Self { pool, gcf }
+        Self::with_latest_and_gcf(pool, false, gcf)
+    }
+
+    /// Construct with both `[mcp].latest` and `[proxy].gcf`.
+    pub fn with_latest_and_gcf(pool: Arc<UpstreamPool>, latest: bool, gcf: bool) -> Self {
+        Self { pool, latest, gcf }
     }
 }
 
 impl ServerHandler for ProxyServer {
+    fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
+        crate::advertised_protocol_versions(self.latest)
+    }
+
     fn get_info(&self) -> ServerInfo {
         let mut impl_info = Implementation::from_build_env();
         impl_info.name = "vmcp-proxy".into();
@@ -256,10 +272,41 @@ fn into_schema_arc(name: &str, raw: &Value) -> Arc<JsonObject> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use rmcp::handler::server::ServerHandler;
     use vmcp_notify::Bus;
     use vmcp_registry::TaskSupportHint;
     use vmcp_upstream::ResolvedTool;
+
+    use super::*;
+    use crate::advertised_protocol_versions;
+
+    #[test]
+    fn new_defaults_to_legacy_advertisement() {
+        let pool = Arc::new(UpstreamPool::empty_for_test(Bus::new(8)));
+        let server = ProxyServer::new(pool);
+        assert_eq!(
+            server.supported_protocol_versions().as_ref(),
+            advertised_protocol_versions(false).as_ref()
+        );
+        assert!(server
+            .supported_protocol_versions()
+            .iter()
+            .all(|v| v.as_str() < ProtocolVersion::V_2026_07_28.as_str()));
+    }
+
+    #[test]
+    fn with_latest_is_dual_era() {
+        let pool = Arc::new(UpstreamPool::empty_for_test(Bus::new(8)));
+        let server = ProxyServer::with_latest(pool, true);
+        assert_eq!(
+            server.supported_protocol_versions().as_ref(),
+            advertised_protocol_versions(true).as_ref()
+        );
+        assert!(server
+            .supported_protocol_versions()
+            .iter()
+            .any(|v| v.as_str() == ProtocolVersion::V_2026_07_28.as_str()));
+    }
 
     #[test]
     fn tools_from_pool_hides_foreign_upstreams() {

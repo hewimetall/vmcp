@@ -41,6 +41,9 @@ use vmcp_upstream::UpstreamPool;
 
 pub use tasks::RUN_TASK_TOOL;
 
+pub mod protocol;
+pub use protocol::advertised_protocol_versions;
+
 pub mod skills;
 pub use skills::{delete_skill, load_skills, render_skill, save_skill, Skill, SkillArg};
 
@@ -104,6 +107,9 @@ struct Inner {
     peers: Arc<DashMap<u64, Peer<RoleServer>>>,
     /// Monotonic id generator for `peers` keys.
     peer_seq: Arc<AtomicU64>,
+    /// When true, advertise MCP `2026-07-28` in `supportedVersions` (dual-era).
+    /// Off keeps discover/initialize on the legacy era through `2025-11-25`.
+    latest: bool,
     /// Limits used when rebuilding a caller-scoped GraphQL schema (G25).
     schema_limits: SchemaLimits,
     /// Include `{server}__{prompt}` in GraphQL when `[proxy]` is on.
@@ -287,7 +293,7 @@ impl VmcpServer {
     /// Pass `Some(runner)` only when `[tasks].enabled` and the allowlist is
     /// non-empty — it registers `run_task` and turns on the server `tasks`
     /// capability. `gcf` gates GCF encoding of `query_graphql` tool text
-    /// (`[gql].gcf`).
+    /// (`[gql].gcf`). Protocol advertisement stays on the legacy era.
     pub fn with_tasks(
         schema: SchemaHandle,
         pool: Arc<UpstreamPool>,
@@ -303,11 +309,14 @@ impl VmcpServer {
             SchemaLimits::default(),
             false,
             gcf,
+            false,
         )
     }
 
     /// [`with_tasks`] plus the GraphQL limits / proxy-prompt flag used to
-    /// rebuild a caller-scoped schema when `upstream:` whitelist mode is on.
+    /// rebuild a caller-scoped schema when `upstream:` whitelist mode is on,
+    /// plus `[mcp].latest`.
+    #[allow(clippy::too_many_arguments)]
     pub fn with_tasks_and_schema(
         schema: SchemaHandle,
         pool: Arc<UpstreamPool>,
@@ -316,6 +325,7 @@ impl VmcpServer {
         schema_limits: SchemaLimits,
         include_upstream_prompts: bool,
         gcf: bool,
+        latest: bool,
     ) -> Self {
         let tasks = tasks.map(|runner| RunTaskTool {
             runner,
@@ -330,6 +340,7 @@ impl VmcpServer {
                 gcf,
                 peers: Arc::new(DashMap::new()),
                 peer_seq: Arc::new(AtomicU64::new(0)),
+                latest,
                 schema_limits,
                 include_upstream_prompts,
             }),
@@ -609,6 +620,10 @@ impl VmcpServer {
 
 #[tool_handler]
 impl ServerHandler for VmcpServer {
+    fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
+        advertised_protocol_versions(self.inner.latest)
+    }
+
     fn get_info(&self) -> ServerInfo {
         let mut impl_info = Implementation::from_build_env();
         impl_info.name = "vmcp".into();

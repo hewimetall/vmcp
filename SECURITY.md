@@ -1,44 +1,47 @@
-# Политика безопасности
+# Security Policy
 
-## Поддерживаемые версии
+**Language:** English | [Русский](SECURITY.ru.md)
 
-Исправления безопасности получает только последний опубликованный релизный
-ряд на GitHub Releases (**1.0.x**). Поле `version` в workspace `Cargo.toml`
-должно совпадать с тегом `v1.0.x`.
+## Supported versions
 
-| Версия | Поддерживается |
-| ------ | -------------- |
-| 1.0.x | да |
+Only the latest published release series on GitHub Releases (**1.0.x**) receives
+security fixes. The `version` field in the workspace `Cargo.toml` must match the
+`v1.0.x` tag.
 
-## Сообщение об уязвимости
+| Version | Supported |
+| ------- | --------- |
+| 1.0.x | Yes |
 
-Пожалуйста, **не** открывайте публичные GitHub issues для проблем безопасности.
+## Reporting a vulnerability
 
-Используйте приватный канал:
+Please **do not** open public GitHub issues for security vulnerabilities.
+
+Use this private reporting channel:
 
 - GitHub Security Advisories: https://github.com/hewimetall/vmcp/security/advisories/new
 
-Мы стремимся подтвердить получение новых сообщений в течение 7 дней. Если
-сообщение принято, мы согласуем с вами исправление и сроки раскрытия до
-публикации advisory.
+We aim to acknowledge new reports within 7 days. If we accept a report, we will
+coordinate the fix and disclosure timeline with you before publishing an
+advisory.
 
-## Область действия
+## Scope
 
-Входит в область действия:
+In scope:
 
-- Бинарный файл `vmcp` и все crates в этом workspace (`crates/vmcp-*`).
-- Аутентификация и авторизация (OAuth 2.1, JWT, обработка пароля argon2id),
-  реализованные в `vmcp-auth` и `vmcp-server`.
-- Обработка GraphQL-запросов и генерация схемы в `vmcp-graphql`.
-- Жизненный цикл upstream-серверов и изоляция процессов в `vmcp-upstream`.
+- The `vmcp` binary and all crates in this workspace (`crates/vmcp-*`).
+- Authentication and authorization implemented in `vmcp-auth` and
+  `vmcp-server`, including OAuth 2.1, JWT, and argon2id password handling.
+- GraphQL request processing and schema generation in `vmcp-graphql`.
+- Upstream server lifecycle management and process isolation in
+  `vmcp-upstream`.
 
-Не входит в область действия:
+Out of scope:
 
-- Сторонние MCP-серверы, запускаемые как upstream. Сообщайте о них их
-  сопровождающим.
-- Ошибки конфигурации в собственном deployment оператора, например запуск vmcp
-  в production с паролем по умолчанию `demo-master`, или с `[proxy] enabled = true`
-  на публичном origin без необходимости (демо-дефолт в `vmcp.toml` — смените
-  перед production).
-- Уязвимости в сторонних crates, перечисленных в `Cargo.lock`: их следует
-  сообщать upstream-проектам; мы подхватим исправленные версии при release.
+- Third-party MCP servers run as upstreams. Report these issues to their
+  maintainers.
+- Misconfiguration of an operator-managed deployment, such as running vmcp in
+  production with the default `demo-master` password or unnecessarily setting
+  `[proxy] enabled = true` on a public origin. These are demo defaults in
+  `vmcp.toml`; change them before deploying to production.
+- Vulnerabilities in third-party crates listed in `Cargo.lock`. Report these to
+  the upstream projects; we will adopt patched versions in a release.

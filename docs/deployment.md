@@ -1,36 +1,38 @@
-# Развертывание
+# Deployment
 
-vmcp — один Rust binary. В production ставь за TLS (Caddy/nginx) и направляй клиентов на `https://<domain>/mcp`.
+**Language:** English | [Русский](ru/deployment.md)
 
-## Режимы
+vmcp is a single Rust binary. In production, deploy it behind TLS (Caddy/nginx) and point clients to `https://<domain>/mcp`.
 
-| Режим | Как | Auth | Admin |
-| ----- | --- | ---- | ----- |
-| HTTP gateway (default) | `vmcp serve`, порт 8765 | OAuth + bearer | `/admin` |
-| Auth disabled | `VMCP_AUTH__ENABLED=false` | нет (только локально) | скрыт |
+## Modes
 
-Для stdio (Claude Desktop, Cursor) — отдельный [vmcp-lite](https://github.com/hewimetall/vmcp-lite).
+| Mode | How | Auth | Admin |
+| ---- | --- | ---- | ----- |
+| HTTP gateway (default) | `vmcp serve`, port 8765 | OAuth + bearer | `/admin` |
+| Auth disabled | `VMCP_AUTH__ENABLED=false` | none (local only) | hidden |
 
-## Артефакты
+For stdio (Claude Desktop, Cursor), use the separate [vmcp-lite](https://github.com/hewimetall/vmcp-lite).
 
-Тег `v*` собирает через CI:
+## Artifacts
+
+CI builds the following for every `v*` tag:
 - Binaries (linux-x86_64, windows-x86_64, macos-aarch64) → GitHub Release
 - Docker image → `ghcr.io/hewimetall/vmcp:<version>`
 
-**На VPS качай GHCR image, не собирай на сервере.**
+**On a VPS, pull the GHCR image instead of building on the server.**
 
 ---
 
-## Kubernetes (черновик)
+## Kubernetes (draft)
 
-Манифесты Gateway API + PVC + probes: [`deploy/k8s/`](../deploy/k8s/).  
-Operator reconcile: правь `registry.json` / `POST /api/v1/upstreams/reload`, токены через `/api/v1/tokens` (Bearer `mcp:admin`).
+Gateway API manifests, a PVC, and probes: [`deploy/k8s/`](../deploy/k8s/).<br>
+For operator reconciliation, edit `registry.json` or call `POST /api/v1/upstreams/reload`; manage tokens through `/api/v1/tokens` (Bearer `mcp:admin`).
 
-## Docker Compose (рекомендуется)
+## Docker Compose (recommended)
 
-Stack: **vmcp** (GHCR image) + **Caddy** (TLS на 80/443).
+Stack: **vmcp** (GHCR image) + **Caddy** (TLS on ports 80/443).
 
-**Нужно:** DNS A-record на IP сервера, Docker Compose v2, открытые порты 80/443.
+**Requirements:** a DNS A record pointing to the server IP, Docker Compose v2, and open ports 80/443.
 
 ### Bootstrap
 
@@ -39,15 +41,15 @@ git clone https://github.com/hewimetall/vmcp.git && cd vmcp
 ./deploy/bootstrap.sh --domain gateway.example.com --tag 1.0.0 --password 'your-secret'
 ```
 
-Script копирует `.env`, прописывает домен/image, генерит argon2 hash внутри image (с удвоенными `$`), делает `docker pull` + `up -d`.
+The script copies `.env`, sets the domain and image, generates an Argon2 hash inside the image (with doubled `$` characters), then runs `docker pull` and `up -d`.
 
-Проверка:
+Verify the deployment:
 
 ```bash
 curl -fsS https://gateway.example.com/health   # → ok
 ```
 
-### Ручной .env (если не через bootstrap)
+### Manual `.env` setup (without bootstrap)
 
 ```dotenv
 VMCP_DOMAIN=gateway.example.com
@@ -55,7 +57,7 @@ VMCP_IMAGE=ghcr.io/hewimetall/vmcp:1.0.0
 VMCP_MASTER_PASSWORD_ARGON2=$$argon2id$$v=19$$m=19456,t=2,p=1$$SALT$$DIGEST
 ```
 
-> ⚠️ **Каждый `$` в hash удваивай как `$$`** — Compose иначе съест как переменную и молча испортит hash. Генерь hash тем же image:
+> ⚠️ **Double every `$` in the hash as `$$`**. Otherwise, Compose treats it as a variable and silently corrupts the hash. Generate the hash with the same image:
 > ```bash
 > docker run --rm --entrypoint /usr/local/bin/vmcp ghcr.io/hewimetall/vmcp:1.0.0 \
 >   hash-password --password 'your-secret'
@@ -65,25 +67,26 @@ VMCP_MASTER_PASSWORD_ARGON2=$$argon2id$$v=19$$m=19456,t=2,p=1$$SALT$$DIGEST
 docker compose pull && docker compose up -d
 ```
 
-Проверить, что процесс видит правильный hash:
+Check that the process sees the correct hash:
 
 ```bash
 docker compose up -d --force-recreate vmcp
 docker compose exec vmcp print-config | rg master_password
 ```
 
-### Что задаёт compose
+### What Compose configures
 
-`VMCP_IMAGE`, `VMCP_HOST=0.0.0.0`, `VMCP_PUBLIC_BASE_URL=https://${VMCP_DOMAIN}`, `VMCP_AUTH__ISSUER`, master password из `.env`, registry из `/data`, sessions в named volume.
+`VMCP_IMAGE`, `VMCP_HOST=0.0.0.0`, `VMCP_PUBLIC_BASE_URL=https://${VMCP_DOMAIN}`, `VMCP_AUTH__ISSUER`, the master password from `.env`, the registry from `/data`, and sessions in a named volume.
 
-`vmcp.toml` монтируется read-only; **прод-настройки идут через env**.
+`vmcp.toml` is mounted read-only; **production settings are supplied through environment variables**.
 
 ### Production upstreams
 
-Дефолтный mount `./demo:/data` — файлы registry/specs/skills с демо-стенда.
-Runtime image **без** Node/`uv`, поэтому stdio-upstreams из `demo/registry.json`
-в контейнере не поднимутся: на VPS монтируй свой data-каталог; локальный demo —
-через бинарь/`cargo` и [`demo/vmcp.toml`](../demo/vmcp.toml):
+The default `./demo:/data` mount provides registry/spec/skill files from the demo environment.
+The runtime image contains **neither** Node nor `uv`, so the stdio upstreams from
+`demo/registry.json` will not start inside the container. On a VPS, mount your own
+data directory; run the demo locally with the binary/`cargo` and
+[`demo/vmcp.toml`](../demo/vmcp.toml):
 
 ```bash
 ./vmcp --config ./demo/vmcp.toml
@@ -95,9 +98,9 @@ volumes:
   - ./prod-data:/data:ro   # registry.json, specs/, skills/
 ```
 
-Детали: [upstreams.md](upstreams.md), [skills.md](skills.md), [demo/README.md](../demo/README.md).
+For details, see [upstreams.md](upstreams.md), [skills.md](skills.md), and [demo/README.md](../demo/README.md).
 
-### Локальная сборка (dev)
+### Local build (development)
 
 ```bash
 ./deploy/bootstrap.sh --domain gateway.example.com --build --password 'your-secret'
@@ -105,9 +108,9 @@ volumes:
 
 ---
 
-## Bare metal (без Docker)
+## Bare metal (without Docker)
 
-Скачай binary из Release (лучше, чем собирать на VPS):
+Download the binary from a release (preferable to building on the VPS):
 
 ```bash
 curl -fsSL -o vmcp.tgz \
@@ -116,9 +119,9 @@ tar -xzf vmcp.tgz
 install -m 755 vmcp /opt/vmcp/vmcp
 ```
 
-Или из исходников: `cargo build --release -p vmcp` (`--no-default-features` — без admin).
+Alternatively, build from source with `cargo build --release -p vmcp` (use `--no-default-features` to exclude the admin UI).
 
-### Конфиг
+### Configuration
 
 ```toml
 host = "0.0.0.0"
@@ -130,7 +133,7 @@ issuer = "https://gateway.example.com"
 master_password_argon2 = "$argon2id$..."   # from `vmcp hash-password`
 ```
 
-Или env (в shell оборачивай hash в **single quotes**):
+Or use environment variables (wrap the hash in **single quotes** in the shell):
 
 ```bash
 export VMCP_PUBLIC_BASE_URL=https://gateway.example.com
@@ -157,42 +160,42 @@ Restart=on-failure
 WantedBy=multi-user.target
 ```
 
-Secrets в `vmcp.env` (`chmod 600`). Вне Compose `$$` не нужны.
+Store secrets in `vmcp.env` (`chmod 600`). Outside Compose, you do not need to double `$` as `$$`.
 
 ### TLS
 
-Terminate на Caddy/nginx, proxy на `127.0.0.1:8765`. `public_base_url` и `auth.issuer` **обязаны** быть публичным `https://` — иначе OAuth-клиенты отвалятся.
+Terminate TLS at Caddy/nginx and proxy to `127.0.0.1:8765`. `public_base_url` and `auth.issuer` **must** be public `https://` URLs, or OAuth clients will fail.
 
 ---
 
-## Чеклист production
+## Production checklist
 
-- [ ] Deploy tag `v*` (или `--build` для staging)
-- [ ] Уникальный master password hash
-- [ ] `public_base_url` + `auth.issuer` = публичный HTTPS
-- [ ] В Docker `.env` — удвоенные `$$` в hash
-- [ ] `VMCP_IMAGE` закреплён на версии (`:1.0.0`, не `:latest`)
-- [ ] Проверен prod `registry.json` (локальный стенд — [`demo/README.md`](../demo/README.md) / [`demo/vmcp.toml`](../demo/vmcp.toml))
-- [ ] CI tokens через `vmcp pre-reg` → `auth.tokens_file` (если нужно)
-- [ ] Writable volume для `tasks.db_path` (если `[tasks]`) — [tasks.md](tasks.md)
-- [ ] Writable volume для `recorder.sessions_dir` — [sessions.md](sessions.md)
-- [ ] `RUST_LOG=info`
-- [ ] Проверен `/health` + один OAuth consent
-- [ ] **Никогда** `auth.enabled = false` в публичной сети
+- [ ] Deploy a `v*` tag (or use `--build` for staging)
+- [ ] Use a unique master password hash
+- [ ] Set `public_base_url` and `auth.issuer` to the public HTTPS URL
+- [ ] Double every `$` in the hash as `$$` in the Docker `.env` file
+- [ ] Pin `VMCP_IMAGE` to a version (`:1.0.0`, not `:latest`)
+- [ ] Verify the production `registry.json` (for a local environment, see [`demo/README.md`](../demo/README.md) / [`demo/vmcp.toml`](../demo/vmcp.toml))
+- [ ] Create CI tokens with `vmcp pre-reg` and configure `auth.tokens_file` if needed
+- [ ] Use a writable volume for `tasks.db_path` when `[tasks]` is enabled — see [tasks.md](tasks.md)
+- [ ] Use a writable volume for `recorder.sessions_dir` — see [sessions.md](sessions.md)
+- [ ] Set `RUST_LOG=info`
+- [ ] Verify `/health` and complete one OAuth consent flow
+- [ ] **Never** set `auth.enabled = false` on a public network
 
 ---
 
-## Обновления
+## Updates
 
 ```bash
 ./deploy/bootstrap.sh --domain gateway.example.com --tag 1.0.0
-# или: правишь VMCP_IMAGE в .env →
+# or: edit VMCP_IMAGE in .env, then run:
 docker compose pull && docker compose up -d --force-recreate vmcp
 ```
 
-Важно при рестарте:
-- **JWT инвалидируются** (JWKS в памяти) — клиенты переделывают token exchange.
-- **DCR client_id сохраняются** в SQLite (`auth.clients_db_path`) — Cursor не нужно re-register.
-- Чтобы полностью пропускать OAuth после redeploy — [static tokens](authentication.md#static-bearer-tokens-pre-reg).
+Important behavior on restart:
+- **JWTs are invalidated** (JWKS is held in memory), so clients must repeat the token exchange.
+- **DCR client IDs are preserved** in SQLite (`auth.clients_db_path`), so Cursor does not need to register again.
+- To bypass OAuth entirely after a redeploy, use [static tokens](authentication.md#static-bearer-tokens-pre-reg).
 
-Сохраняй `auth.clients_db_path` и `recorder.sessions_dir` между пересозданиями.
+Persist `auth.clients_db_path` and `recorder.sessions_dir` across container recreations.

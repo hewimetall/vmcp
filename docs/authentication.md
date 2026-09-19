@@ -1,83 +1,85 @@
-# Аутентификация
+# Authentication
 
-`/mcp` (и `/mcp-proxy`) защищены через **auth facade**: либо встроенный OAuth 2.1 AS/RS (`provider = "local"`), либо внешний [Authentik](https://github.com/goauthentik/authentik) (`provider = "authentik"`). `/admin` — отдельный фасад с тремя режимами.
+**Language:** English | [Русский](ru/authentication.md)
 
-## Поверхности
+`/mcp` (and `/mcp-proxy`) are protected by an **authentication facade**: either the built-in OAuth 2.1 AS/RS (`provider = "local"`) or external [Authentik](https://github.com/goauthentik/authentik) (`provider = "authentik"`). `/admin` uses a separate facade with three modes.
 
-| Path | Auth | Назначение |
-| ---- | ---- | ---------- |
-| `/mcp` | Bearer JWT / `vmcp_…` / Authentik forward-auth | MCP streamable HTTP |
-| `/mcp-proxy` | то же (если `[proxy]`) | Transparent upstream tools |
+## Surfaces
+
+| Path | Authentication | Purpose |
+| ---- | -------------- | ------- |
+| `/mcp` | Bearer JWT / `vmcp_…` / Authentik forward auth | MCP Streamable HTTP |
+| `/mcp-proxy` | same (when `[proxy]` is enabled) | Transparent upstream tools |
 | `/admin` | `none` \| HTTP Basic \| Authentik headers | Operator SPA |
-| `/health` | нет | Liveness |
-| `/ready` | нет | Readiness (soft: ≥1 connected upstream, если в registry есть enabled) |
-| `/authorize`, `/consent`, `/token`, `/register`, `/.well-known/*` | нет | OAuth + metadata (local AS) |
+| `/health` | none | Liveness |
+| `/ready` | none | Readiness (soft: ≥1 connected upstream when the registry contains an enabled upstream) |
+| `/authorize`, `/consent`, `/token`, `/register`, `/.well-known/*` | none | OAuth + metadata (local AS) |
 
 ---
 
-## Auth facade: `local` vs `authentik`
+## Authentication facade: `local` vs `authentik`
 
-Одна точка входа (`AuthFacade`) на каждый защищённый запрос. Аноним / роль по умолчанию **никогда** не подставляются.
+Every protected request passes through a single entry point (`AuthFacade`). An anonymous or default role is **never** substituted.
 
 | | `provider = "local"` (default) | `provider = "authentik"` |
-| - | --- | --- |
-| Кто выдаёт токены | vmcp (DCR + PKCE + consent) | Authentik OAuth2/OIDC |
-| MCP-клиент | Bearer JWT или `vmcp_…` | Bearer JWT от Authentik |
-| Браузер за шлюзом | — | `X-authentik-username` + `X-authentik-groups` |
-| JWT verify | локальный JWKS | remote JWKS (rustls `reqwest`) + Authentik JWKS |
-| Local `/authorize`… | да | нет (только PRM → Authentik) |
+| - | ------------------------------ | --------------------------------- |
+| Token issuer | vmcp (DCR + PKCE + consent) | Authentik OAuth2/OIDC |
+| MCP client | Bearer JWT or `vmcp_…` | Bearer JWT from Authentik |
+| Browser behind the gateway | — | `X-authentik-username` + `X-authentik-groups` |
+| JWT verification | local JWKS | remote JWKS (rustls `reqwest`) + Authentik JWKS |
+| Local `/authorize`… | yes | no (PRM points to Authentik only) |
 
-### Authentik (рекомендуемая схема без DCR)
+### Authentik (recommended setup without DCR)
 
 ```toml
 [auth]
 enabled = true
 provider = "authentik"
-# master_password_argon2 опционален — только если нужен /admin Basic
+# master_password_argon2 is optional; set it only if /admin Basic is needed
 
 [auth.authentik]
 issuer = "https://auth.example.com/application/o/mcp-internal/"
 jwks_url = "https://auth.example.com/application/o/mcp-internal/jwks/"
-# пусто → public_base_url + /mcp (+ /mcp-proxy)
+# empty → public_base_url + /mcp (+ /mcp-proxy)
 audiences = ["https://architecture.mcpwork.space/mcp"]
-accept_bearer = true          # MCP-клиенты
-forward_auth = true           # браузер за Envoy/Caddy forward-auth
-# ОБЯЗАТЕЛЬНО при forward_auth: hop trust (иначе X-authentik-* с любого peer)
+accept_bearer = true          # MCP clients
+forward_auth = true           # browser behind Envoy/Caddy forward auth
+# REQUIRED with forward_auth: hop trust (otherwise any peer can send X-authentik-*)
 trusted_proxies = ["10.244.0.0/16"]
-# или / плюс: forward_auth_secret = "…"  (env: VMCP_AUTH__AUTHENTIK__FORWARD_AUTH_SECRET)
+# alternatively/in addition: forward_auth_secret = "…"  (env: VMCP_AUTH__AUTHENTIK__FORWARD_AUTH_SECRET)
 # forward_auth_secret_header = "x-vmcp-forward-auth"
 group_scopes = { "mcp-users" = "mcp:use", "mcp-admins" = "mcp:admin" }
 ```
 
-Правила forward-auth:
+Forward-auth rules:
 
-1. Hop trust: TCP peer ∈ `trusted_proxies` и/или заголовок с `forward_auth_secret` (оба → AND). Без knobs — отказ при загрузке конфига.
-2. Нет `X-authentik-username` → отказ (не аноним).
-3. Группы режутся по `|`, `,`, `;`, пробелу; сравнение **точное** (`architect-x` ≠ `architect`).
-4. Scope из `group_scopes` считается на **каждом** запросе.
+1. Hop trust: the TCP peer must be in `trusted_proxies` and/or supply the header containing `forward_auth_secret` (if both are configured, both must match). With neither control configured, the configuration fails to load.
+2. A missing `X-authentik-username` is rejected; the request does not become anonymous.
+3. Groups are split on `|`, `,`, `;`, or whitespace and compared **exactly** (`architect-x` ≠ `architect`).
+4. Scopes are derived from `group_scopes` on **every** request.
 
-Подделка `X-authentik-*` с `kubectl port-forward` / прямого доступа к pod **не** должна давать сессию — см. [ADR 0001](adr/0001-forward-auth-trust-and-identity-propagation.md).
+Spoofing `X-authentik-*` through `kubectl port-forward` or direct pod access **must not** create a session. See [ADR 0001](adr/0001-forward-auth-trust-and-identity-propagation.md).
 
-Предпочтительно: pre-registered public client в Authentik + Authorization Code + PKCE (не DCR).
+Prefer a pre-registered public client in Authentik with Authorization Code + PKCE, rather than DCR.
 
-### `/admin` auth: `none` | `basic` | `authentik`
+### `/admin` authentication: `none` | `basic` | `authentik`
 
-Независимо от MCP `provider`:
+This is independent of the MCP `provider`:
 
-| `auth.admin.mode` | Как пускает |
-| ----------------- | ----------- |
-| `none` | без проверки (только локально) |
+| `auth.admin.mode` | Access mechanism |
+| ----------------- | ---------------- |
+| `none` | no checks (local use only) |
 | `basic` (default) | HTTP Basic `login:password` → `master_password_argon2` |
-| `authentik` | заголовки `X-authentik-username` / `X-authentik-groups`; нужна точная группа из `required_groups` |
+| `authentik` | `X-authentik-username` / `X-authentik-groups` headers; requires an exact group from `required_groups` |
 
 ```toml
 [auth.admin]
 mode = "authentik"
 required_groups = ["mcp-admins"]
-# username_header / groups_header — опционально; иначе из [auth.authentik]
+# username_header / groups_header are optional; otherwise values come from [auth.authentik]
 ```
 
-При `mode = authentik`: нет username-заголовка → 401; группа сравнивается **точно** после split по `|`, `,`, `;`, пробелу (`architect-x` ≠ `architect`).
+With `mode = authentik`, a missing username header returns 401. Groups are compared **exactly** after splitting on `|`, `,`, `;`, or whitespace (`architect-x` ≠ `architect`).
 
 ---
 
@@ -93,10 +95,11 @@ required_groups = ["mcp-admins"]
 7. POST /mcp  Authorization: Bearer <token>
 ```
 
-PKCE обязателен (`S256`). Если поддерживается RFC 8707 — добавляй `resource=https://<host>/mcp` (или `/mcp-proxy` при включённом proxy).
+PKCE is required (`S256`). When RFC 8707 is supported, add `resource=https://<host>/mcp` (or `/mcp-proxy` when the proxy is enabled).
 
+<a id="scripted-smoke-test"></a>
 <details>
-<summary>Скриптовый smoke test</summary>
+<summary>Scripted smoke test</summary>
 
 ```bash
 BASE=https://gateway.example.com
@@ -111,7 +114,7 @@ CLIENT=$(curl -fsS -X POST "$BASE/register" -H 'Content-Type: application/json' 
 LOC=$(curl -fsSI "$BASE/authorize?response_type=code&client_id=$CLIENT&redirect_uri=$REDIRECT&scope=mcp:use&code_challenge=$CHALLENGE&code_challenge_method=S256&resource=$BASE/mcp" | awk -F': ' '/^location:/I{print $2}' | tr -d '\r')
 echo "Open in browser: $LOC"
 
-# после ввода master password в браузере получишь ?code=… →
+# after entering the master password in the browser, you will receive ?code=… →
 curl -fsS -X POST "$BASE/token" \
   -d "grant_type=authorization_code&code=$CODE&code_verifier=$VERIFIER&client_id=$CLIENT&redirect_uri=$REDIRECT&resource=$BASE/mcp"
 ```
@@ -121,11 +124,11 @@ curl -fsS -X POST "$BASE/token" \
 
 ## Master password
 
-Сгенерировать hash:
+Generate a hash:
 
 ```bash
 cargo run -p vmcp -- hash-password --password 'your-secret'
-# на VPS — через image:
+# on a VPS, use the image:
 docker run --rm --entrypoint /usr/local/bin/vmcp ghcr.io/hewimetall/vmcp:latest \
   hash-password --password 'your-secret'
 ```
@@ -135,40 +138,40 @@ docker run --rm --entrypoint /usr/local/bin/vmcp ghcr.io/hewimetall/vmcp:latest 
 master_password_argon2 = "$argon2id$v=19$m=19456,t=2,p=1$..."
 ```
 
-Или env (переопределяет TOML): `VMCP_AUTH__MASTER_PASSWORD_ARGON2='$argon2id$...'`
+Or use an environment variable (which overrides TOML): `VMCP_AUTH__MASTER_PASSWORD_ARGON2='$argon2id$...'`
 
-Дефолт в `vmcp.toml` — hash от **`demo-master`** (только локально).
+The default in `vmcp.toml` is the hash of **`demo-master`** (for local use only).
 
-**Consent:** неверный пароль → `403`, session жива, можно повторить. Протух `cs` → `400`, начинай с `/authorize`.
+**Consent:** an incorrect password returns `403`, but the session remains valid and can be retried. An expired `cs` returns `400`; start again at `/authorize`.
 
 ---
 
-## Hash не работает — чеклист
+## Hash troubleshooting checklist
 
-1. **`$` в Docker `.env` не удвоены** (самое частое). Compose интерполирует `$VAR`, поэтому каждый `$` в hash → `$$`:
+1. **`$` characters are not doubled in Docker `.env`** (the most common cause). Compose interpolates `$VAR`, so replace every `$` in the hash with `$$`:
    ```dotenv
    VMCP_MASTER_PASSWORD_ARGON2=$$argon2id$$v=19$$m=19456,t=2,p=1$$SALT$$HASH
    ```
-   Затем `docker compose up -d --force-recreate vmcp`.
+   Then run `docker compose up -d --force-recreate vmcp`.
 
-2. **Env переопределяет TOML.** Если задан `VMCP_AUTH__MASTER_PASSWORD_ARGON2` (даже кривой) — hash из toml игнорится. Проверь:
+2. **Environment variables override TOML.** If `VMCP_AUTH__MASTER_PASSWORD_ARGON2` is set, even to an invalid value, the hash in the TOML file is ignored. Check it with:
    ```bash
    docker compose exec vmcp print-config | rg master_password
    ```
 
-3. **Не тот пароль.** Hash соответствует ровно одному паролю. Перегенери и redeploy, если потерял.
+3. **The password is wrong.** A hash corresponds to exactly one password. If the password is lost, generate a new hash and redeploy.
 
-4. **Мусор в пароле:** `echo 'secret' | ...` добавляет `\n` — используй `--password`. Ещё: autofill, раскладка, `.env` изменён но container не пересоздан.
+4. **The password contains unintended characters:** `echo 'secret' | ...` appends `\n`; use `--password`. Also check autofill, keyboard layout, and whether `.env` changed without the container being recreated.
 
-5. **Placeholder hash** (`$REPLACE_ME` и т.п.) → boot падает с `not a valid argon2 hash`.
+5. **A placeholder hash** such as `$REPLACE_ME` causes startup to fail with `not a valid argon2 hash`.
 
-6. **`auth.enabled = false`** — нет consent/bearer вообще (только localhost).
+6. **`auth.enabled = false`** disables consent and bearer authentication entirely (localhost only).
 
 ---
 
 ## Static bearer tokens (`pre-reg`)
 
-Для CI/скриптов, которым не подходит OAuth на каждый рестарт:
+Use these for CI or scripts that cannot repeat OAuth after every restart:
 
 ```bash
 cargo run -p vmcp -- pre-reg --name ci --scope mcp:use --out ./tokens.json
@@ -184,45 +187,46 @@ tokens_file = "./tokens.json"
 curl -H "Authorization: Bearer vmcp_…" https://gateway.example.com/mcp
 ```
 
-Не истекают (revoke = удали строку), hot-reload без рестарта, OAuth работает параллельно.
+They do not expire (to revoke one, delete its row), are hot-reloaded without a restart, and work alongside OAuth.
 
-Для operator/k8s удобнее HTTP API (см. ниже), чем править файл вручную.
+For operators and Kubernetes, the HTTP API described below is more convenient than editing the file manually.
 
 ### Scopes (enforced)
 
-Строка `scope` — space-separated. Проверяется на `query_graphql` / `/mcp-proxy` / `run_task`:
+The `scope` string is space-separated. It is enforced for `query_graphql`, `/mcp-proxy`, and `run_task`:
 
-| Scope | Значение |
-| ----- | -------- |
-| `mcp:use` | Полный доступ (как раньше; default у `pre-reg`) |
-| `mcp:admin` | Control-plane `/api/v1` + полный MCP доступ |
-| `mcp:read` | Только Query / readOnly tools |
+| Scope | Meaning |
+| ----- | ------- |
+| `mcp:use` | Full access (the previous behavior and the `pre-reg` default) |
+| `mcp:admin` | Control-plane `/api/v1` + full MCP access |
+| `mcp:read` | Query/read-only tools only |
 | `mcp:write` | Query + Mutation |
-| `upstream:<name>` | Whitelist GraphQL namespace / proxy server (если есть хоть один — режим whitelist) |
-| `deny:<server>.<tool>` | Запрет конкретного tool поверх grants |
+| `upstream:<name>` | Allowlists a GraphQL namespace/proxy server (the presence of any such scope enables allowlist mode) |
+| `deny:<server>.<tool>` | Denies a specific tool in addition to the grant rules |
 
-Пример: `--scope 'mcp:use upstream:time'` — агент не вызовет `postgres.*`.
+Example: with `--scope 'mcp:use upstream:time'`, the agent cannot call `postgres.*`.
 
-> **G25:** при whitelist (`upstream:<name>` без `mcp:admin`) каталог режется тем же
-> предикатом, что и вызовы: GraphQL `servers` / `search` / `prompts` /
-> `searchPrompts` / `__type` (namespace-поля Query/Mutation), GraphQL
-> `notifications.source`, и `/mcp-proxy` `tools/list` + `prompts/list`.
-> `mcp:admin` видит полный каталог. Без `upstream:*` токенов каталог по-прежнему
-> полный (как и call grants). Контракт: [ADR 0002](adr/0002-per-caller-catalog-visibility.md).
+> **G25:** With an allowlist (`upstream:<name>` without `mcp:admin`), the catalog
+> is filtered by the same predicate as calls: GraphQL `servers` / `search` /
+> `prompts` / `searchPrompts` / `__type` (Query/Mutation namespace fields),
+> GraphQL `notifications.source`, and `/mcp-proxy` `tools/list` + `prompts/list`.
+> `mcp:admin` sees the full catalog. Tokens without any `upstream:*` scope still
+> see the full catalog, matching the call-grant behavior. Contract: [ADR 0002](adr/0002-per-caller-catalog-visibility.md).
 
-> **G30:** DCR / OAuth consent **не** выдают `mcp:admin` (strips). Admin только через
-> `pre-reg` / `/api/v1/tokens` с operator Bearer.
+> **G30:** DCR / OAuth consent **never** grants `mcp:admin`; it is stripped.
+> Admin access is available only through `pre-reg` or `/api/v1/tokens` with an operator bearer token.
 
-Static tokens **бессрочные** (G34); нет last-used/TTL в API. Храни `tokens.json` как secret;
-rotate: `PUT /api/v1/tokens/:client_id`. Файл max ~2 MiB / 10k entries (G33).
+Static tokens **never expire** (G34); the API has no last-used timestamp or TTL. Store
+`tokens.json` as a secret. Rotate a token with `PUT /api/v1/tokens/:client_id`.
+The file is limited to approximately 2 MiB / 10,000 entries (G33).
 
-`/api/v1` монтируется **только** при `auth.enabled` + нужен `tokens_file` для Token CRUD (G13).
+`/api/v1` is mounted **only** when `auth.enabled = true`, and Token CRUD requires a `tokens_file` (G13).
 
 ---
 
 ## Operator API `/api/v1` (Bearer)
 
-Параллельно `/admin` (HTTP Basic). Automation ходит сюда с static bearer, у которого в `scope` есть **`mcp:admin`**.
+This API is available alongside `/admin` (HTTP Basic). Automation accesses it with a static bearer token whose `scope` contains **`mcp:admin`**.
 
 Bootstrap:
 
@@ -230,14 +234,14 @@ Bootstrap:
 vmcp pre-reg --name operator --scope mcp:admin --out ./tokens.json
 ```
 
-| Method | Path | Описание |
-| ------ | ---- | -------- |
-| `GET` | `/api/v1/tokens` | Список без полного секрета (`token_prefix`) |
-| `POST` | `/api/v1/tokens` | `{ "name", "scope"? }` → полный `token` **один раз**; duplicate `name` → 409; unknown scope tokens → 400 |
-| `PUT` | `/api/v1/tokens/:client_id` | Rotate secret (same name/scope); полный `token` один раз |
-| `DELETE` | `/api/v1/tokens/:client_id` | Revoke; нельзя удалить последний `mcp:admin` → 400 |
-| `GET` | `/api/v1/upstreams` | Status live pool |
-| `POST` | `/api/v1/upstreams/reload` | Reconcile `registry.json` без рестарта; ответ включает `registry_sha256` / `mtime_unix_ms` |
+| Method | Path | Description |
+| ------ | ---- | ----------- |
+| `GET` | `/api/v1/tokens` | List tokens without the full secret (`token_prefix`) |
+| `POST` | `/api/v1/tokens` | `{ "name", "scope"? }` → full `token` **once**; duplicate `name` → 409; unknown scope tokens → 400 |
+| `PUT` | `/api/v1/tokens/:client_id` | Rotate the secret (same name/scope); returns the full `token` once |
+| `DELETE` | `/api/v1/tokens/:client_id` | Revoke; deleting the final `mcp:admin` token is rejected with 400 |
+| `GET` | `/api/v1/upstreams` | Status of the live pool |
+| `POST` | `/api/v1/upstreams/reload` | Reconcile `registry.json` without a restart; the response includes `registry_sha256` / `mtime_unix_ms` |
 
 ```bash
 curl -H "Authorization: Bearer $OPERATOR_TOKEN" \
@@ -246,29 +250,29 @@ curl -H "Authorization: Bearer $OPERATOR_TOKEN" \
   -d '{"name":"agent-a","scope":"mcp:use"}'
 ```
 
-Без Bearer → 401; Bearer с `mcp:use` (без `mcp:admin`) → 403.  
-`/admin` SPA + Basic **не менялись**.
+No bearer token → 401; a bearer token with `mcp:use` but without `mcp:admin` → 403.<br>
+The `/admin` SPA and Basic authentication are **unchanged**.
 
 ---
 
-## DCR clients (переживают restart)
+## DCR clients (survive restart)
 
-`POST /register` пишет каждый client в **SQLite** (`auth.clients_db_path`, default `state/clients.db`) + hot cache в DashMap. После рестарта store перечитывается — Cursor не ловит `unknown client_id`.
+`POST /register` writes every client to **SQLite** (`auth.clients_db_path`, default `state/clients.db`) and to a hot DashMap cache. The store is reloaded after a restart, so Cursor does not receive `unknown client_id`.
 
 ### DCR policy
 
 ```toml
 [auth]
-dcr_enabled = true          # false → POST /register = 403 (pre-reg tokens остаются)
-dcr_max_clients = 256       # 0 = без лимита
+dcr_enabled = true          # false → POST /register = 403 (pre-reg tokens remain valid)
+dcr_max_clients = 256       # 0 = unlimited
 dcr_redirect_uri_allowlist = ["http://127.0.0.1", "http://localhost", "cursor://"]
 ```
 
-Пустой allowlist = как раньше (любой `redirect_uri`). Rate-limit на `/register` лучше на Envoy; vmcp даёт policy hooks выше. Успешные registration пишутся в audit log (`DCR client registered`).
+An empty allowlist retains the previous behavior and permits any `redirect_uri`. Rate-limit `/register` at Envoy; vmcp provides the policy controls above. Successful registrations are written to the audit log (`DCR client registered`).
 
-Черновые k8s манифесты: [`deploy/k8s/`](../deploy/k8s/).
+Draft Kubernetes manifests: [`deploy/k8s/`](../deploy/k8s/).
 
-Каждая registration получает уникальное `name` (`cursor`, `cursor-2`, …). Переименовать в admin UI или:
+Each registration receives a unique `name` (`cursor`, `cursor-2`, …). Rename it in the admin UI or with:
 
 ```bash
 curl -X PATCH https://<domain>/admin/api/sessions/<client_id> \
@@ -276,55 +280,55 @@ curl -X PATCH https://<domain>/admin/api/sessions/<client_id> \
   -d '{"name":"laptop"}'
 ```
 
-`name` — `^[a-z0-9_-]{1,64}$`, уникален среди DCR clients.
+`name` must match `^[a-z0-9_-]{1,64}$` and be unique among DCR clients.
 
-> **Upgrade <1.0:** миграция колонки `name` удалена. Удали `clients.db` и переделай DCR/consent — иначе старая SQLite может не открыться.
+> **Upgrading from a version earlier than 1.0:** the `name` column migration has been removed. Delete `clients.db` and repeat DCR/consent, or the old SQLite database might fail to open.
 
 ```toml
 [auth]
 clients_db_path = "./state/clients.db"
 ```
 
-### Что переживает restart
+### Data that survives a restart
 
-| Данные | Переживает? |
-| ------ | ----------- |
-| DCR `client_id` + `name` (SQLite) | **Да** |
-| Static `vmcp_…` tokens | **Да** |
-| JWT access tokens (in-memory JWKS) | **Нет** — повтори token exchange |
-| Auth codes / consent sessions | **Нет** — начни OAuth заново |
+| Data | Survives? |
+| ---- | --------- |
+| DCR `client_id` + `name` (SQLite) | **Yes** |
+| Static `vmcp_…` tokens | **Yes** |
+| JWT access tokens (in-memory JWKS) | **No** — repeat the token exchange |
+| Authorization codes / consent sessions | **No** — restart the OAuth flow |
 
-В Docker монтируй parent dir как writable (volume `vmcp_state`).
+In Docker, mount the parent directory as writable (the `vmcp_state` volume).
 
 ---
 
-## Отключение auth (только локально)
+## Disabling authentication (local use only)
 
 ```toml
 [auth]
 enabled = false
 ```
 
-Bearer middleware не монтируется, `/admin` скрывается. **Не в публичной сети.**
+The bearer middleware is not mounted, and `/admin` is hidden. **Do not use this on a public network.**
 
-Демо-стенд уже так настроен: [`demo/vmcp.toml`](../demo/vmcp.toml)
+The demo environment is already configured this way: [`demo/vmcp.toml`](../demo/vmcp.toml)
 (`./vmcp --config ./demo/vmcp.toml`).
 
 ---
 
 ## JWT
 
-- Подписаны ротируемым RS256 ключом (`jwks_rotate_secs`, default 86400).
-- `token_ttl_secs` default 3600; должно быть `jwks_rotate_secs >= 2 * token_ttl_secs`.
-- Rotation держит предыдущий `kid` (окно из 2 ключей) — неистёкшие JWT ещё принимаются.
-- **По умолчанию restart = новый JWKS** → старые JWT мертвы. Для automation бери static tokens.
-- Опционально persist ключа на PVC:
+- JWTs are signed with a rotating RS256 key (`jwks_rotate_secs`, default 86400).
+- `token_ttl_secs` defaults to 3600; `jwks_rotate_secs` must be at least `2 * token_ttl_secs`.
+- Rotation retains the previous `kid` (a two-key window), so unexpired JWTs remain valid.
+- **By default, restart = new JWKS**, invalidating old JWTs. Use static tokens for automation.
+- You can optionally persist the key on a PVC:
 
 ```toml
 [auth]
 jwks_private_key_pem_path = "/state/jwks.pem"  # load or generate+write 0600
 ```
 
-Тогда JWT переживают restart. Пишется PKCS#1 PEM + атомарный
-`<path>.bundle.json` с **current и previous** ключами (окно ротации переживает
-pod recreate — G14/G31). Env: `VMCP_AUTH__JWKS_PRIVATE_KEY_PEM_PATH`.
+With this setting, JWTs survive a restart. vmcp writes a PKCS#1 PEM and an atomic
+`<path>.bundle.json` containing the **current and previous** keys, so the rotation
+window survives pod recreation (G14/G31). Environment variable: `VMCP_AUTH__JWKS_PRIVATE_KEY_PEM_PATH`.

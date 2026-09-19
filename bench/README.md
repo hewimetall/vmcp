@@ -1,19 +1,23 @@
-# `vmcp/bench/` — benchmark агрегации `query_graphql`
+# `vmcp/bench/` — `query_graphql` aggregation benchmark
 
-Измеряет, насколько агрессивно LLM батчит вызовы `query_graphql`, когда получает
-разные описания инструмента. Экземпляр vmcp не нужен — результат инструмента
-синтезируется inline в `mock_tool.py` (возвращает правдоподобный JSON, достаточный,
-чтобы ответить на канонические задачи ОДНИМ пакетным вызовом).
+**Language:** English | [Русский](README.ru.md)
 
-**Операторское руководство:** [`docs/bench.md`](../docs/bench.md)
+Measures how aggressively an LLM batches `query_graphql` calls when given
+different tool descriptions. No vmcp instance is required: `mock_tool.py`
+synthesizes the tool result inline, returning plausible JSON sufficient to
+answer the canonical tasks in ONE batched call.
 
-## Метрика
+**Operator guide:** [`docs/bench.md`](../docs/bench.md)
 
-На каждый run: число вызовов инструмента `query_graphql` + total tokens. Чем меньше
-call count, тем вероятнее LLM объединяет под-вопросы в один документ через aliases. Главное число —
-**single-shot rate**: % runs, где `tool_call_count == 1`.
+## Metric
 
-## Быстрый старт
+For each run, the harness records the number of `query_graphql` tool calls and
+the total token count. A lower call count indicates that the LLM is more likely
+to combine subquestions into a single document using aliases. The primary
+metric is the **single-shot rate**: the percentage of runs where
+`tool_call_count == 1`.
+
+## Quick start
 
 ```bash
 cd bench
@@ -35,7 +39,7 @@ uv run python run.py \
   --runs 20 --tag A --out results/A.jsonl
 ```
 
-## A/B-сравнение описаний
+## A/B test tool descriptions
 
 ```bash
 uv run python run.py --description descriptions/A_current.txt    --runs 20 --tag A --out results/A.jsonl
@@ -43,11 +47,11 @@ uv run python run.py --description descriptions/C_noguidance.txt --runs 20 --tag
 uv run python analyze.py results/A.jsonl results/C.jsonl
 ```
 
-`analyze.py` печатает delta по задачам + общее изменение single-shot rate.
+`analyze.py` prints per-task deltas and the overall change in single-shot rate.
 
-## A/B-сравнение системных промптов (Hermes / Cursor / Claude Code)
+## A/B test system prompts (Hermes / Cursor / Claude Code)
 
-Оставьте `--description` фиксированным и меняйте `--system`:
+Keep `--description` fixed and vary `--system`:
 
 ```bash
 DESC=descriptions/A_current.txt
@@ -63,10 +67,10 @@ done
 uv run python analyze.py results/sys_default.jsonl results/sys_hermes.jsonl
 ```
 
-Источники и заметки об адаптации: [`prompts/SOURCES.md`](prompts/SOURCES.md).
-Полное операторское руководство: [`docs/bench.md`](../docs/bench.md).
+Sources and adaptation notes: [`prompts/SOURCES.md`](prompts/SOURCES.md).
+Full operator guide: [`docs/bench.md`](../docs/bench.md).
 
-## Структура
+## Layout
 
 ```
 run.py                 # async harness (Typer CLI)
@@ -93,32 +97,35 @@ tasks/
 results/               # gitignored — JSONL outputs land here
 ```
 
-## Обновить описание после редактирования lib.rs
+## Update the description after editing lib.rs
 
 ```bash
 uv run python _extract_desc.py
 ```
 
-Читает `crates/vmcp-server/src/lib.rs`, находит блок `#[tool(description = ...)]`
-(поддерживает raw strings `r#"..."#` и escaped `"..."` с Rust line-continuations),
-записывает в `descriptions/HEAD.txt`. Запускайте после каждого изменения описания
-инструмента, чтобы bench-time HEAD.txt был синхронизирован с shipped source.
+This reads `crates/vmcp-server/src/lib.rs`, locates the
+`#[tool(description = ...)]` block (supporting both raw strings such as
+`r#"..."#` and escaped `"..."` strings with Rust line continuations), and
+writes it to `descriptions/HEAD.txt`. Run it after every change to the tool
+description so the benchmark's `HEAD.txt` remains synchronized with the shipped
+source.
 
-## Как работает счётчик aliases
+## How alias counting works
 
-Regex для top-level alias `(\w+)\s*:\s*(\w+)\s*\{` считает каждый `<alias>: <server> {`
-внутри query. Сигнал достаточный; он не зависит от `graphql-core`. Sanity asserts в начале
-`run.py` проверяют три известных query (1, 3, 5 aliases).
+The top-level alias regex `(\w+)\s*:\s*(\w+)\s*\{` counts each
+`<alias>: <server> {` within the query. This signal is sufficient and does not
+depend on `graphql-core`. Startup sanity assertions in `run.py` check three
+known queries containing 1, 3, and 5 aliases.
 
-## Ограничения
+## Limitations
 
-- **Concurrency**: 20 — значение по умолчанию; providers могут вводить rate-limit, если выше.
-  `tenacity` делает retry с exp backoff при `RateLimitError` / `APITimeoutError`
-  / connection errors.
-- **Determinism**: `temperature=0.7` по умолчанию, поэтому 20 runs одной задачи расходятся.
-  Для variance-free baselines передайте `--temperature 0`.
-- **Truncation**: каждый run ограничен `--turn-cap 8` rounds и 30 messages.
-  Строки помечаются как `"truncated": true`. Увеличьте cap, если LLM действительно нужно
-  больше turns.
-- **Mock fidelity**: row counts и salaries — статические fixtures. Мы измеряем
-  LLM batching decisions, а не корректность данных.
+- **Concurrency**: the default is 20; providers may impose rate limits at
+  higher values. `tenacity` retries `RateLimitError`, `APITimeoutError`, and
+  connection errors with exponential backoff.
+- **Determinism**: the default is `temperature=0.7`, so 20 runs of the same task
+  will diverge. Pass `--temperature 0` for variance-free baselines.
+- **Truncation**: each run is limited to `--turn-cap 8` rounds and 30 messages.
+  Rows are marked `"truncated": true`. Increase the cap if the LLM genuinely
+  needs more turns.
+- **Mock fidelity**: row counts and salaries are static fixtures. The benchmark
+  measures LLM batching decisions, not data correctness.

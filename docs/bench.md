@@ -1,34 +1,36 @@
-# Запуск aggregation bench
+# Running the aggregation benchmark
 
-`bench/` — опциональный Python harness, который измеряет, насколько агрессивно LLM
-батчит вызовы `query_graphql` при разных описаниях инструмента. Ему **не** нужен
-запущенный шлюз vmcp — `mock_tool.py` синтезирует правдоподобный JSON inline, поэтому
-метрика отражает поведение модели при batching, а не MCP plumbing.
+**Language:** English | [Русский](ru/bench.md)
 
-Требуется:
+`bench/` is an optional Python harness that measures how aggressively an LLM
+batches `query_graphql` calls under different tool descriptions. It does **not**
+require a running vmcp gateway: `mock_tool.py` synthesizes realistic JSON inline,
+so the metric reflects the model's batching behavior rather than MCP plumbing.
+
+Requirements:
 
 - Python ≥ 3.11
-- [`uv`](https://docs.astral.sh/uv/) (рекомендуется) или эквивалентный venv
-- OpenAI-compatible chat API key
+- [`uv`](https://docs.astral.sh/uv/) (recommended) or an equivalent virtual environment
+- An OpenAI-compatible chat API key
 
-## Установка
+## Setup
 
 ```bash
 cd bench
 uv sync
 ```
 
-## Учётные данные
+## Credentials
 
-Задайте API key перед любым настоящим LLM-запуском. **Жёстко заданного fallback нет.**
+Set an API key before making any real LLM request. **There is no hard-coded fallback.**
 
-| Переменная | Обязательна | По умолчанию | Заметки |
+| Variable | Required | Default | Notes |
 | -------- | -------- | ------- | ----- |
-| `OPENAI_API_KEY` | yes* | — | Предпочтительно. Alias: `LITELLM_API_KEY`. |
-| `OPENAI_BASE_URL` | no | `https://api.openai.com/v1` | Любой OpenAI-compatible base URL. Alias: `LITELLM_BASE_URL`. |
-| `OPENAI_MODEL` | no | `gpt-4o-mini` | Можно переопределить через `--model`. |
+| `OPENAI_API_KEY` | yes* | — | Preferred. Alias: `LITELLM_API_KEY`. |
+| `OPENAI_BASE_URL` | no | `https://api.openai.com/v1` | Any OpenAI-compatible base URL. Alias: `LITELLM_BASE_URL`. |
+| `OPENAI_MODEL` | no | `gpt-4o-mini` | Can be overridden with `--model`. |
 
-\* Требуется одна из `OPENAI_API_KEY` / `LITELLM_API_KEY`.
+\* One of `OPENAI_API_KEY` / `LITELLM_API_KEY` is required.
 
 ```bash
 export OPENAI_API_KEY=sk-...
@@ -37,9 +39,9 @@ export OPENAI_BASE_URL=https://api.openai.com/v1
 export OPENAI_MODEL=gpt-4o-mini
 ```
 
-## Пробный запуск
+## Smoke run
 
-Одна задача × одна реплика, низкая concurrency:
+One task × one replica at low concurrency:
 
 ```bash
 cd bench
@@ -49,9 +51,9 @@ uv run python run.py \
   --tag smoke --out results/smoke.jsonl
 ```
 
-## Полное A/B-сравнение (описания инструментов)
+## Full A/B comparison (tool descriptions)
 
-Оставьте system prompt фиксированным (по умолчанию) и меняйте описания инструмента:
+Keep the system prompt fixed (the default) and vary the tool description:
 
 ```bash
 uv run python run.py \
@@ -65,22 +67,22 @@ uv run python run.py \
 uv run python analyze.py results/A.jsonl results/C.jsonl
 ```
 
-`analyze.py` печатает deltas по задачам и общее изменение single-shot rate
-(`tool_call_count == 1`).
+`analyze.py` prints per-task deltas and the overall change in the single-shot
+rate (`tool_call_count == 1`).
 
-## A/B-сравнение (системные промпты агента)
+## A/B comparison (agent system prompts)
 
-Оставьте описание инструмента фиксированным и меняйте системные промпты в стиле harness.
-Поставляемые адаптации (см. [`bench/prompts/SOURCES.md`](../bench/prompts/SOURCES.md)):
+Keep the tool description fixed and vary the harness-style system prompts.
+Bundled adaptations (see [`bench/prompts/SOURCES.md`](../bench/prompts/SOURCES.md)):
 
-| Tag | `--system` | Стиль |
+| Tag | `--system` | Style |
 | --- | ---------- | ----- |
-| `sys_default` | `prompts/system_default.txt` | Минимальная bench baseline |
+| `sys_default` | `prompts/system_default.txt` | Minimal benchmark baseline |
 | `sys_hermes` | `prompts/system_hermes.txt` | Nous Research Hermes Agent |
 | `sys_cursor` | `prompts/system_cursor.txt` | Cursor Agent |
 | `sys_claude` | `prompts/system_claude_code.txt` | Claude Code harness |
 
-Пример матрицы против описания RULE #1:
+Example matrix using the RULE #1 description:
 
 ```bash
 DESC=descriptions/A_current.txt
@@ -107,48 +109,49 @@ uv run python analyze.py results/sys_default.jsonl results/sys_cursor.jsonl
 uv run python analyze.py results/sys_default.jsonl results/sys_claude.jsonl
 ```
 
-Также можно скрещивать description × system (например, `C_noguidance` + Hermes) —
-ясно помечайте outputs, чтобы строки `analyze.py` оставались сопоставимыми.
+You can also combine description × system variants (for example,
+`C_noguidance` + Hermes). Label outputs clearly so the `analyze.py` rows remain
+comparable.
 
-## Полезные flags
+## Useful options
 
-| Flag | По умолчанию | Значение |
-| ---- | ------- | ------- |
-| `--description` / `-d` | required | Текстовый файл описания инструмента |
+| Flag | Default | Description |
+| ---- | ------- | ----------- |
+| `--description` / `-d` | required | Text file containing the tool description |
 | `--system` / `-s` | `prompts/system_default.txt` | System prompt |
-| `--tasks` / `-t` | `tasks/tasks.jsonl` | JSONL с `{id, user_msg}` |
+| `--tasks` / `-t` | `tasks/tasks.jsonl` | JSONL containing `{id, user_msg}` |
 | `--runs` / `-n` | `20` | Replicas per task |
-| `--concurrency` / `-c` | `20` | Параллельные запуски |
-| `--turn-cap` | `8` | Максимум tool-use rounds на run |
+| `--concurrency` / `-c` | `20` | Concurrent runs |
+| `--turn-cap` | `8` | Maximum tool-use rounds per run |
 | `--model` / `-m` | `OPENAI_MODEL` or `gpt-4o-mini` | Chat model id |
-| `--temperature` | `0.7` | Sampling temperature (`0` для deterministic) |
+| `--temperature` | `0.7` | Sampling temperature (`0` for deterministic output) |
 | `--base-url` | env / OpenAI | OpenAI-compatible base URL |
-| `--tag` | `run` | Метка, записываемая в каждую строку JSONL |
+| `--tag` | `run` | Label written to every JSONL row |
 | `--out` / `-o` | `results/run.jsonl` | Output path |
 
-## Синхронизация описания из Rust source
+## Synchronizing the description from the Rust source
 
-После редактирования описания инструмента `query_graphql` в
-`crates/vmcp-server/src/lib.rs`:
+After editing the `query_graphql` tool description in
+`crates/vmcp-server/src/lib.rs`, run:
 
 ```bash
 cd bench
 uv run python _extract_desc.py
 ```
 
-Записывает live extract в `descriptions/HEAD.txt`.
+This writes the current extracted description to `descriptions/HEAD.txt`.
 
-## Структура
+## Layout
 
-См. [`bench/README.md`](../bench/README.md) для карты каталогов, определения метрики
-и известных ограничений. Исторические числа A vs C (1400 runs) лежат в
-[`bench/RESULTS.md`](../bench/RESULTS.md).
+See [`bench/README.md`](../bench/README.md) for the directory map, metric
+definition, and known limitations. Historical A vs C results from 1,400 runs
+are in [`bench/RESULTS.md`](../bench/RESULTS.md).
 
-## Примечания
+## Notes
 
-- Результаты в `bench/results/` gitignored, кроме канонических
-  `A_current.jsonl` / `C_noguidance.jsonl`, на которых основан `RESULTS.md`.
-- Mock возвращает фиксированные demo fixtures (fake employees/customers). Он не
-  подключён к живой базе данных.
-- Providers могут вводить rate-limit при высокой concurrency; harness повторяет
-  `RateLimitError`, timeouts и connection errors с exponential backoff.
+- Results in `bench/results/` are gitignored except for the canonical
+  `A_current.jsonl` / `C_noguidance.jsonl` files on which `RESULTS.md` is based.
+- The mock returns fixed demo fixtures (fake employees/customers). It is not
+  connected to a live database.
+- Providers may apply rate limits at high concurrency. The harness retries
+  `RateLimitError`, timeouts, and connection errors with exponential backoff.

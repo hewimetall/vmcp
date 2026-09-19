@@ -1,28 +1,31 @@
-# Нативные MCP Tasks (`run_task`)
+# Native MCP Tasks (`run_task`)
 
-vmcp может открывать **SEP-1686** (ревизия спецификации 2025-11-25) для долгих
-upstream-инструментов, не превращая каждый GraphQL-вызов в задачу.
+**Language:** English | [Русский](ru/tasks.md)
 
-| Путь | Опыт клиента | Кто ждёт |
+vmcp can expose **SEP-1686** (the 2025-11-25 specification revision) for
+long-running upstream tools without turning every GraphQL call into a task.
+
+| Path | Client experience | Who waits |
 | ---- | ----------------- | --------- |
-| `query_graphql` | Немедленный GraphQL JSON | **Шлюз** ждёт upstream (sync) |
-| `run_task` без `task` | Немедленный `CallToolResult` | **Шлюз** ждёт один upstream-инструмент |
-| `run_task` с `task: {}` | Немедленный `CreateTaskResult` | **Клиент** опрашивает `tasks/get` / `tasks/result` |
+| `query_graphql` | Immediate GraphQL JSON | The **gateway** waits for the upstream (sync) |
+| `run_task` without `task` | Immediate `CallToolResult` | The **gateway** waits for one upstream tool |
+| `run_task` with `task: {}` | Immediate `CreateTaskResult` | The **client** polls `tasks/get` / `tasks/result` |
 
-Устойчивые строки задач живут во **встроенном SQLite** (WAL).
+Durable task rows are stored in **embedded SQLite** (WAL).
 
-### Логи клиенту (MCP logging)
+### Client logs (MCP logging)
 
-При lifecycle `run_task` (enqueue / call / completed / failed) vmcp публикует
-`notifications/message` с `logger = "tasks/<task_id>"` на внутренний bus —
-то же, что форвардится подключённым `/mcp` клиентам (capability `logging`).
-Не путать с admin sessions dump: для long-running tasks слушайте MCP logging.
+During the `run_task` lifecycle (enqueue / call / completed / failed), vmcp
+publishes `notifications/message` with `logger = "tasks/<task_id>"` to the
+internal bus. These are the same messages forwarded to connected `/mcp`
+clients (with the `logging` capability). Do not confuse this with the admin
+session dump: listen to MCP logging for long-running tasks.
 
 ---
 
-## Включение
+## Enabling Tasks
 
-По умолчанию выключено. В `vmcp.toml`:
+Tasks are disabled by default. Configure them in `vmcp.toml`:
 
 ```toml
 [tasks]
@@ -33,7 +36,7 @@ poll_interval_ms = 2000      # hint for clients
 max_concurrent = 16          # in-flight upstream proxies
 ```
 
-Env overrides (figment):
+Environment overrides (figment):
 
 ```bash
 VMCP_TASKS__ENABLED=true
@@ -41,17 +44,17 @@ VMCP_TASKS__DB_PATH=/var/lib/vmcp/tasks.db
 VMCP_TASKS__MAX_CONCURRENT=8
 ```
 
-При запуске, если `enabled`, но **ни один** upstream-инструмент не поддерживает задачи,
-vmcp логирует предупреждение и **не** регистрирует capability `run_task` / `tasks`.
+At startup, if `enabled` is set but **no** upstream tool supports tasks, vmcp
+logs a warning and **does not** register the `run_task` / `tasks` capability.
 
 ---
 
-## Какие инструменты появляются в `run_task`
+## Tools exposed through `run_task`
 
-В allowlist попадают только инструменты, помеченные как task-capable:
+Only tools marked as task-capable are added to the allowlist:
 
 1. Upstream `tools/list` → `execution.taskSupport` = `optional` | `required`
-2. Sidecar override в `spec_dir/<server>.json`:
+2. A sidecar override in `spec_dir/<server>.json`:
 
 ```json
 {
@@ -63,28 +66,29 @@ vmcp логирует предупреждение и **не** регистри�
 }
 ```
 
-| `task_support` | Значение |
+| `task_support` | Meaning |
 | -------------- | ------- |
-| omitted / `forbidden` | Только GraphQL (не в `run_task`) |
-| `optional` | Можно использовать `run_task` с `task` или без него |
-| `required` | Предпочтителен task-augmented `run_task` (инструмент всё равно указан под GraphQL для sync-клиентов) |
+| omitted / `forbidden` | GraphQL only (not in `run_task`) |
+| `optional` | `run_task` can be used with or without `task` |
+| `required` | Task-augmented `run_task` is preferred (the tool is still listed under GraphQL for sync clients) |
 
-Опциональный sidecar (если подключаешь presentation через
-[`demo/registry.presentation.json`](../demo/registry.presentation.json)):
+An optional sidecar is available when presentation is connected through
+[`demo/registry.presentation.json`](../demo/registry.presentation.json):
 
 - `demo/specs/presentation.json` — `build_presentation`, `deploy_presentation`
 
-Обнаружение через GraphQL:
+Discover these tools through GraphQL:
 
 ```graphql
 { search(q: "build") { server tool readOnly taskSupport description } }
 ```
 
-`taskSupport` равен `optional` / `required` для инструментов из allowlist, иначе null.
+`taskSupport` is `optional` / `required` for allowlisted tools and null for
+all other tools.
 
 ---
 
-## Аргументы `run_task`
+## `run_task` arguments
 
 ```json
 {
@@ -94,72 +98,80 @@ vmcp логирует предупреждение и **не** регистри�
 }
 ```
 
-- `(server, tool)` не из allowlist → ошибка (`isError` на sync path или
-  invalid-params при постановке в очередь).
-- Sync path: шлюз вызывает upstream и возвращает его `CallToolResult`.
-- Async path: клиент добавляет MCP `task` в `tools/call` → `CreateTaskResult`
-  (`taskId`, `status: working`, `ttl`, `pollInterval`).
+- A `(server, tool)` pair outside the allowlist produces an error (`isError`
+  on the sync path or invalid-params while enqueueing).
+- On the sync path, the gateway invokes the upstream and returns its
+  `CallToolResult`.
+- On the async path, the client adds MCP `task` to `tools/call`, which returns
+  a `CreateTaskResult` (`taskId`, `status: working`, `ttl`, `pollInterval`).
 
 ### Async JSON-RPC flow
 
 1. `tools/call` `run_task` + `params.task` → `CreateTaskResult`
-2. Опрашивайте `tasks/get` `{ taskId }` до `completed` / `failed` / `cancelled`
-   (учитывайте `pollInterval`)
-3. `tasks/result` `{ taskId }` → исходный `CallToolResult` (блокирует до
-   terminal-состояния, если вызвано рано)
-4. Опционально: `tasks/list`, `tasks/cancel`
+2. Poll `tasks/get` `{ taskId }` until `completed` / `failed` / `cancelled`
+   (honor `pollInterval`)
+3. `tasks/result` `{ taskId }` → the original `CallToolResult` (blocks until a
+   terminal state if called early)
+4. Optional: `tasks/list`, `tasks/cancel`
 
-Server capability при подключении: `tasks.list`, `tasks.cancel`,
-`tasks.requests.tools.call`. Только **`run_task`** может дополняться task — не
+Server capability at connection time: `tasks.list`, `tasks.cancel`,
+`tasks.requests.tools.call`. Only **`run_task`** can be task-augmented, not
 `query_graphql`.
 
 ---
 
 ## SQLite layout
 
-Файл: `tasks.db_path` (по умолчанию `state/tasks.db`).
+File: `tasks.db_path` (`state/tasks.db` by default).
 
-| Колонка | Роль |
+| Column | Role |
 | ------ | ---- |
 | `task_id` | UUID primary key |
-| `owner` | Привязка контекста (phase 1: `"anon"`) |
-| `server` / `tool` | Целевой upstream |
+| `owner` | Context binding (phase 1: `"anon"`) |
+| `server` / `tool` | Target upstream |
 | `status` | `working` / `input_required` / `completed` / `failed` / `cancelled` |
-| `result_json` | Сериализованный `CallToolResult`, когда terminal |
-| `ttl_ms` / `poll_interval_ms` | Объявляется клиентам |
-| `created_at` / `last_updated_at` | ISO-8601 для MCP `Task` |
+| `result_json` | Serialized `CallToolResult` when terminal |
+| `ttl_ms` / `poll_interval_ms` | Advertised to clients |
+| `created_at` / `last_updated_at` | ISO-8601 values for MCP `Task` |
 | `created_unix_ms` | GC |
 
-Переживает перезапуск шлюза: клиенты могут вызывать `tasks/get` /
-`tasks/result` по строкам в SQLite. `ttl_ms` / `poll_interval_ms`
-**объявляются** клиентам в `CreateTaskResult`; метод `TaskStore::gc()` есть,
-но фоновый GC в runtime пока **не запущен** (в отличие от recorder idle GC).
-In-process waiters используют `Notify`; после перезапуска `tasks/result`
-опрашивает SQLite.
+The rows survive gateway restarts: clients can call `tasks/get` /
+`tasks/result` for tasks stored in SQLite. `ttl_ms` / `poll_interval_ms` are
+**advertised** to clients in `CreateTaskResult`; the `TaskStore::gc()` method
+exists, but the runtime **does not yet start** background GC (unlike recorder
+idle GC). In-process waiters use `Notify`; after a restart, `tasks/result`
+polls SQLite.
 
 ---
 
-## Когда что использовать
+## Choosing the right path
 
-| Сценарий | Инструмент |
+| Scenario | Tool |
 | -------- | ---- |
-| Пакетные короткие чтения / discovery | `query_graphql` (один документ, aliases) |
-| Долгий процесс, sync-only клиент (например Cursor + progress) | `query_graphql` mutation **или** `run_task` без `task` |
-| Долгий процесс, task-aware клиент | `run_task` + `task: {}` |
+| Batched short reads / discovery | `query_graphql` (one document, aliases) |
+| Long-running process, sync-only client (for example, Cursor + progress) | `query_graphql` mutation **or** `run_task` without `task` |
+| Long-running process, task-aware client | `run_task` + `task: {}` |
 
-run_task рассчитан только на долгие upstream-инструменты из allowlist. Discovery-запросы (servers, search) и любые крошечные чтения туда не входят — они отдаются мгновенно и не являются задачами. Попытка вызвать их через run_task вернёт ошибку (isError на sync path либо invalid-params при постановке в очередь), а оборачивать мгновенное чтение в механизм задач (строка в SQLite, поллинг, TTL) попросту бессмысленно. Такие операции выполняйте через query_graphql.
+run_task is only intended for long-running, allowlisted upstream tools.
+Discovery queries (servers, search) and other tiny reads do not belong there:
+they return immediately and are not tasks. Calling them through run_task
+returns an error (isError on the sync path or invalid-params while
+enqueueing), and wrapping an immediate read in task machinery (a SQLite row,
+polling, and a TTL) serves no purpose. Perform these operations through
+query_graphql.
 
 ---
 
-## Тесты и покрытие
+<a id="tests--coverage"></a>
+## Tests and coverage
 
-| Проверка | Команда / файл |
+| Check | Command / file |
 | ----- | -------------- |
 | E2E SEP-1686 | `cargo test -p vmcp --test run_task_tasks` |
 | Unit TaskStore / TaskRunner | `cargo test -p vmcp-server --lib tasks::` |
 | Unit skills load / render / CRUD | `cargo test -p vmcp-server --lib skills::` |
-| Line coverage gate (≥93%, включает `tasks` + `sessions` + `skills` + prompt agg) | `cargo llvm-cov -p vmcp-server --lib --fail-under-lines 93 --ignore-filename-regex '(^|/)(otel_file|proxy|lib|recorder)\.rs$'` |
+| Line coverage gate (≥96%, includes `tasks` + `sessions` + `skills` + prompt aggregation) | `cargo llvm-cov -p vmcp-server --lib --fail-under-lines 96 --ignore-filename-regex '(^|/)(otel_file|proxy|lib|recorder)\.rs$'` |
 
-Также см. [skills.md](skills.md#tests--coverage),
-[aggregation.md](aggregation.md) и
+See also [skills.md](skills.md#tests--coverage),
+[aggregation.md](aggregation.md), and
 [builds-and-modes.md](builds-and-modes.md#optional-native-mcp-tasks-run_task).

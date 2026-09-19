@@ -2,6 +2,19 @@
 
 **Language:** English | [Русский](ru/clients.md)
 
+## Client how-to guides
+
+| Client | Guide |
+| ------ | ----- |
+| Cursor | [How to connect Cursor to vmcp](how-to/connect-cursor.md) |
+| OpenCode | [How to connect OpenCode to vmcp](how-to/connect-opencode.md) |
+| Agno | [How to connect an Agno agent to vmcp](how-to/connect-agno.md) |
+
+Each guide includes prerequisites, a complete configuration or runnable
+example, verification steps, and troubleshooting.
+
+---
+
 ## Cursor / VS Code MCP (HTTP + OAuth)
 
 1. Deploy vmcp at a public HTTPS URL (see [deployment.md](deployment.md)).

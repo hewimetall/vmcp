@@ -15,7 +15,10 @@ Operator guide for deploying and operating the virtual MCP gateway.
 | [tasks.md](tasks.md) | Native MCP Tasks (`run_task`), SQLite store, allowlist, and the SEP-1686 flow |
 | [sessions.md](sessions.md) | Registry of admin sessions and recordings (JSON in `sessions_dir`) |
 | [skills.md](skills.md) | YAML skill playbooks exposed through MCP `prompts/list` / `prompts/get` |
-| [clients.md](clients.md) | Cursor, OpenCode, and Agno how-to guides; scripted MCP/HTTP clients; and vmcp-lite for local stdio hosts |
+| [clients.md](clients.md) | Scripted MCP/HTTP clients and vmcp-lite for local stdio hosts |
+| [how-to/connect-cursor.md](how-to/connect-cursor.md) | How to connect Cursor to vmcp |
+| [how-to/connect-opencode.md](how-to/connect-opencode.md) | How to connect OpenCode to vmcp |
+| [how-to/connect-agno.md](how-to/connect-agno.md) | How to connect an Agno agent to vmcp |
 | [bench.md](bench.md) | Optional Python tool for measuring how LLMs batch `query_graphql` requests |
 | [aggregation.md](aggregation.md) | How GraphQL aggregation works across upstream tools |
 | [mcp-2026-07-28.md](mcp-2026-07-28.md) | Evaluation of the 2026-07-28 spec, session remapping, the `[mcp].latest` flag, and gateway patterns |

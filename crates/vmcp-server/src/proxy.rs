@@ -208,6 +208,19 @@ fn build_description(
     })
 }
 
+fn into_schema_arc(name: &str, raw: &Value) -> Arc<JsonObject> {
+    match raw.as_object() {
+        Some(obj) => Arc::new(obj.clone()),
+        None => {
+            warn!(
+                tool = %name,
+                "upstream input_schema is not a JSON object, falling back to {{}}"
+            );
+            Arc::new(JsonObject::new())
+        }
+    }
+}
+
 #[cfg(test)]
 mod latest_tests {
     use rmcp::handler::server::ServerHandler;
@@ -242,18 +255,5 @@ mod latest_tests {
             .supported_protocol_versions()
             .iter()
             .any(|v| v.as_str() == ProtocolVersion::V_2026_07_28.as_str()));
-    }
-}
-
-fn into_schema_arc(name: &str, raw: &Value) -> Arc<JsonObject> {
-    match raw.as_object() {
-        Some(obj) => Arc::new(obj.clone()),
-        None => {
-            warn!(
-                tool = %name,
-                "upstream input_schema is not a JSON object, falling back to {{}}"
-            );
-            Arc::new(JsonObject::new())
-        }
     }
 }

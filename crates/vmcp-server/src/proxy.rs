@@ -29,15 +29,26 @@ use crate::prompt_proxy::{
 #[derive(Clone)]
 pub struct ProxyServer {
     pool: Arc<UpstreamPool>,
+    /// Same `[mcp].latest` gate as [`crate::VmcpServer`].
+    latest: bool,
 }
 
 impl ProxyServer {
     pub fn new(pool: Arc<UpstreamPool>) -> Self {
-        Self { pool }
+        Self::with_latest(pool, false)
+    }
+
+    /// Construct with the `[mcp].latest` advertisement flag.
+    pub fn with_latest(pool: Arc<UpstreamPool>, latest: bool) -> Self {
+        Self { pool, latest }
     }
 }
 
 impl ServerHandler for ProxyServer {
+    fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
+        crate::advertised_protocol_versions(self.latest)
+    }
+
     fn get_info(&self) -> ServerInfo {
         let mut impl_info = Implementation::from_build_env();
         impl_info.name = "vmcp-proxy".into();

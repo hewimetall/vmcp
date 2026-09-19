@@ -114,11 +114,18 @@ pub async fn boot(cfg: Settings) -> Result<BootContext> {
         None
     };
 
-    let vmcp_server = VmcpServer::with_tasks(
+    if cfg.mcp.latest {
+        info!("MCP latest (2026-07-28) advertised in supportedVersions (dual-era)");
+    } else {
+        info!("MCP latest off — advertising legacy revisions through 2025-11-25");
+    }
+
+    let vmcp_server = VmcpServer::with_tasks_latest(
         schema_swap.clone(),
         pool.clone(),
         skills.clone(),
         task_runner,
+        cfg.mcp.latest,
     );
 
     // Notification forwarder is started from `serve_http` after

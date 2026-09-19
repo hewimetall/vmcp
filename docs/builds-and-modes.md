@@ -136,6 +136,27 @@ Env: `VMCP_TASKS__ENABLED=true`, `VMCP_TASKS__DB_PATH=…`.
 
 ---
 
+## MCP latest (`2026-07-28`, опционально)
+
+По умолчанию шлюз рекламирует только legacy-ревизии (через `2025-11-25`).
+Флаг `[mcp].latest` добавляет `2026-07-28` в `supportedVersions` — тот же
+паттерн, что `supportedVersions` у AgentCore: версия — свойство шлюза,
+клиент выбирает её на каждый запрос.
+
+```toml
+[mcp]
+latest = true
+```
+
+Env: `VMCP_MCP__LATEST=true`.
+
+`latest = false` (дефолт) — безопасная ветка: `server/discover` /
+`initialize` не обещают 2026. `latest = true` — dual-era (legacy + latest),
+не modern-only. Подробности и ограничения (listen, recorder sid):
+[mcp-2026-07-28.md](mcp-2026-07-28.md).
+
+---
+
 ## Tests / coverage
 
 Server gate ≥93% (skills, prompt aggregation, tasks, sessions):

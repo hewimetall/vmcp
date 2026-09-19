@@ -41,6 +41,7 @@ tar -xzf vmcp.tgz
 
 ```bash
 VMCP_AUTH__MASTER_PASSWORD_ARGON2='$argon2id$...' cargo run -p vmcp
+# Advertise MCP 2026-07-28 (off by default): VMCP_MCP__LATEST=true
 ```
 
 Утилиты:

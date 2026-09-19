@@ -7,7 +7,9 @@
 **vmcp** — Rust workspace (виртуальный MCP gateway), который предоставляет
 upstream MCP-серверы через GraphQL tool `query_graphql` по streamable HTTP на
 `/mcp`. Опциональный `[tasks]` добавляет SEP-1686 `run_task` с SQLite TaskStore
-— см. [`docs/tasks.md`](docs/tasks.md). Опциональные Python benchmarks находятся
+— см. [`docs/tasks.md`](docs/tasks.md). Опциональный `[mcp].latest`
+рекламирует протокол `2026-07-28` рядом с legacy (`2025-11-25`); по
+умолчанию выключен — см. [`docs/mcp-2026-07-28.md`](docs/mcp-2026-07-28.md). Опциональные Python benchmarks находятся
 в `bench/` и не требуют запущенного gateway.
 
 ### Инструментарий

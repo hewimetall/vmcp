@@ -85,6 +85,13 @@ gc_interval_secs = 30
 enabled  = true
 mcp_path = "/mcp-proxy"
 
+# Advertise MCP 2026-07-28 (latest) in server/discover + initialize, alongside
+# the legacy era through 2025-11-25. Off by default — do not enable until the
+# host/clients you care about speak 2026 (see docs/mcp-2026-07-28.md).
+# Env: VMCP_MCP__LATEST=true
+# [mcp]
+# latest = true
+
 # Optional native MCP Tasks (SEP-1686). Off by default.
 # When enabled, vmcp registers `run_task` for upstream tools with
 # execution.taskSupport (or sidecar task_support) and stores durable rows in

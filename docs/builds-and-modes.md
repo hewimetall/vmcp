@@ -161,7 +161,6 @@ listen and recorder SID behavior, see [mcp-2026-07-28.md](mcp-2026-07-28.md).
 
 ---
 
-<a id="gcf-output-опционально-два-флага"></a>
 ## GCF output (optional, two flags)
 
 [GCF](https://gcformat.com/) uses the generic profile instead of JSON in MCP tool text. The flags are **independent**, and both are off by default. If the encoder rejects a value (an integer outside the i64 range), vmcp falls back to JSON.

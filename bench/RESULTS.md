@@ -117,10 +117,10 @@ python3 _summary.py
   targeting the `customer_country_breakdown` failure mode. **The run has not
   completed yet**: the LLM endpoint went down partway through the batch with a
   persistent `HTTP 000` connection refusal after approximately 50 replicas per
-  task. The harness has been updated to retry `APIConnectionError` and
-  `InternalServerError` up to 5 times, with exponential backoff capped at 30
-  seconds and a 90-second per-request timeout. Rerun it when the endpoint is
-  available again.
+  task. The harness has been updated to make up to 5 total attempts for
+  `APIConnectionError` and `InternalServerError`, with exponential backoff
+  capped at 30 seconds and a 90-second per-request timeout. Rerun it when the
+  endpoint is available again.
 
 ## Provenance
 
@@ -154,8 +154,9 @@ both forms.
 
 **A_v2 has not yet been re-benchmarked**: the LLM endpoint went down partway
 through the A_v2 batch with an `HTTP 000` connection refusal after approximately
-50 replicas per task. The harness now retries `APIConnectionError` and
-`InternalServerError` up to 5 times and applies a 90-second per-request timeout.
-Rerun the benchmark when the endpoint is available to determine whether the
+50 replicas per task. The harness now makes up to 5 total attempts for
+`APIConnectionError` and `InternalServerError` and applies a 90-second
+per-request timeout. Rerun the benchmark when the endpoint is available to
+determine whether the
 new rules raise `customer_country_breakdown` from a 14% single-shot rate toward
 the 92% that the canonical `demo_summary` achieves in A.

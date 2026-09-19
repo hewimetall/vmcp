@@ -2,6 +2,19 @@
 
 **Язык:** [English](../clients.md) | Русский
 
+## How-to для клиентов
+
+| Клиент | Руководство |
+| ------ | ----------- |
+| Cursor | [Как подключить Cursor к vmcp](how-to/connect-cursor.md) |
+| OpenCode | [Как подключить OpenCode к vmcp](how-to/connect-opencode.md) |
+| Agno | [Как подключить агента Agno к vmcp](how-to/connect-agno.md) |
+
+В каждом руководстве есть предварительные требования, полная конфигурация или
+запускаемый пример, проверка результата и устранение неполадок.
+
+---
+
 ## Cursor / VS Code MCP (HTTP + OAuth)
 
 1. Разверните vmcp с публичным HTTPS-адресом (см. [deployment.md](deployment.md)).

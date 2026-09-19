@@ -128,6 +128,12 @@ cargo build --release -p vmcp --no-default-features  # без admin UI
 
 Полное руководство: [`docs/ru/README.md`](docs/ru/README.md) — deployment, auth, upstreams, tasks, skills, clients.
 
+How-to:
+
+- [Подключить Cursor](docs/ru/how-to/connect-cursor.md)
+- [Подключить OpenCode](docs/ru/how-to/connect-opencode.md)
+- [Подключить агента Agno](docs/ru/how-to/connect-agno.md)
+
 ## Лицензия
 
 MIT — см. [LICENSE](LICENSE).

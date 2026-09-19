@@ -30,8 +30,9 @@
 Из корня репозитория:
 
 ```bash
-# опционально для context7:
-# export CONTEXT7_API_KEY=...
+# demo/registry.json подставляет ${CONTEXT7_API_KEY}; незаданная переменная
+# прерывает запуск. Пустое значение отключает Authorization у Context7.
+export CONTEXT7_API_KEY="${CONTEXT7_API_KEY:-}"
 
 ./vmcp --config ./demo/vmcp.toml
 # или:

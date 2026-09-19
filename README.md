@@ -128,6 +128,12 @@ cargo build --release -p vmcp --no-default-features  # without admin UI
 
 See [`docs/README.md`](docs/README.md) for the full guide to deployment, authentication, upstream servers, tasks, skills, and clients.
 
+How-to guides:
+
+- [Connect Cursor](docs/how-to/connect-cursor.md)
+- [Connect OpenCode](docs/how-to/connect-opencode.md)
+- [Connect an Agno agent](docs/how-to/connect-agno.md)
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

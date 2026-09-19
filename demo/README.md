@@ -1,65 +1,69 @@
 # Demo
 
-Мини-стенд: gateway + несколько MCP upstreams над проектом [`stand/`](stand/).
-Конфиг: [`vmcp.toml`](vmcp.toml).
+**Language:** English | [Русский](README.ru.md)
 
-## Что внутри
+A small test environment comprising the gateway and several MCP upstreams that
+operate on the [`stand/`](stand/) project. Configuration:
+[`vmcp.toml`](vmcp.toml).
 
-| Upstream | Зачем |
-|----------|--------|
-| `time` | время / таймзоны |
-| `filesystem` | файлы в `stand/` |
-| `architect_c4` | C4 в `stand/docs/` |
-| `agent_lsp` | LSP по Python в `stand/` |
-| `context7` | доки библиотек (нужен `CONTEXT7_API_KEY`) |
+## What's included
 
-## Нужно на машине
+| Upstream | Purpose |
+|----------|---------|
+| `time` | Time and time zones |
+| `filesystem` | Files in `stand/` |
+| `architect_c4` | C4 models in `stand/docs/` |
+| `agent_lsp` | Python LSP support for `stand/` |
+| `context7` | Library documentation (requires `CONTEXT7_API_KEY`) |
 
-- бинарь `vmcp` (release с GitHub) **или** `cargo run -p vmcp`
-- `uv` (для `uvx`)
+## Prerequisites
+
+- the `vmcp` binary (from a GitHub release) **or** `cargo run -p vmcp`
+- `uv` (for `uvx`)
 - Node.js / `npx`
 - `agent-lsp` + language servers:
   - demo Python: `pip install agent-lsp` + `npm i -g pyright`
   - this Rust workspace: `pip install agent-lsp` + `rustup component add rust-analyzer`
     then `./scripts/run-agent-lsp.sh` → MCP HTTP on `http://127.0.0.1:8766`
 
-## Поднять
+## Run the demo
 
-Из корня репозитория:
+From the repository root:
 
 ```bash
-# опционально для context7:
+# optional for context7:
 # export CONTEXT7_API_KEY=...
 
 ./vmcp --config ./demo/vmcp.toml
-# или:
+# or:
 cargo run -p vmcp -- --config ./demo/vmcp.toml
 ```
 
-Проверка:
+Health check:
 
 ```bash
 curl -fsS http://127.0.0.1:8765/health
 # ok
 ```
 
-Автопроверка:
+Automated smoke test:
 
 ```bash
 VMCP_BIN=./vmcp python3 demo/smoke_demo_gateway.py
 ```
 
-## Что вызвать
+## Example calls
 
-Auth выключен в `demo/vmcp.toml`. MCP: `http://127.0.0.1:8765/mcp`, tool `query_graphql`.
+Authentication is disabled in `demo/vmcp.toml`. The MCP endpoint is
+`http://127.0.0.1:8765/mcp`; use the `query_graphql` tool.
 
-Список серверов:
+List servers:
 
 ```graphql
 { servers { name toolCount } }
 ```
 
-Время:
+Get the current time:
 
 ```graphql
 {
@@ -69,7 +73,7 @@ Auth выключен в `demo/vmcp.toml`. MCP: `http://127.0.0.1:8765/mcp`, too
 }
 ```
 
-Файл из стенда:
+Read a file from the test project:
 
 ```graphql
 {
@@ -79,7 +83,7 @@ Auth выключен в `demo/vmcp.toml`. MCP: `http://127.0.0.1:8765/mcp`, too
 }
 ```
 
-C4-модель:
+C4 model:
 
 ```graphql
 {
@@ -89,7 +93,7 @@ C4-модель:
 }
 ```
 
-LSP (сначала корень проекта — абсолютный путь):
+LSP (start by passing the absolute path to the project root):
 
 ```graphql
 mutation {
@@ -107,7 +111,7 @@ mutation {
 }
 ```
 
-Context7 (если есть ключ):
+Context7 (if the API key is set):
 
 ```graphql
 {
@@ -117,4 +121,5 @@ Context7 (если есть ключ):
 }
 ```
 
-Если какой-то upstream не поднялся, gateway всё равно работает — в `servers` его просто не будет.
+If an upstream fails to start, the gateway continues to run; that upstream is
+simply omitted from `servers`.

@@ -1,98 +1,111 @@
-# Реестр сессий и записи
+# Session registry and recordings
 
-HTTP-сессии шлюза (вкладка **Sessions** в админке) хранятся в виде JSON-файлов на диске. Поэтому при перезапуске шлюза список сессий не теряется: она снова читается с диска.
+**Language:** English | [Русский](ru/sessions.md)
 
-Конфигурация: секция `[recorder]` в [`vmcp.toml`](../vmcp.toml).
+The gateway's HTTP sessions (the **Sessions** tab in the admin UI) are stored
+as JSON files on disk. The session list therefore survives gateway restarts:
+it is loaded from disk again.
+
+Configuration: the `[recorder]` section in [`vmcp.toml`](../vmcp.toml).
 
 ```toml
 [recorder]
-sessions_dir     = "./sessions"   # создаётся автоматически
+sessions_dir     = "./sessions"   # created automatically
 redact_keys      = ["password","secret","token","api_key","Authorization"]
-idle_ttl_secs    = 300            # закрыть idle + tear-down rmcp-сессии (FD/SSE)
+idle_ttl_secs    = 300            # close idle entries + tear down rmcp sessions (FD/SSE)
 gc_interval_secs = 30
 ```
 
-Переменные окружения:
+Environment variables:
 - `VMCP_RECORDER__SESSIONS_DIR=/var/lib/vmcp/sessions`
-- `VMCP_SESSION_CHANNEL_CAPACITY=<n>` — окно mpsc на Streamable HTTP сессию
-  (если не задано — дефолт rmcp)
+- `VMCP_SESSION_CHANNEL_CAPACITY=<n>` — the mpsc window for each Streamable
+  HTTP session (uses the rmcp default when unset)
 
-Idle GC не только помечает запись в registry как `closed`, но и вызывает
-`LocalSessionManager::close_session` на `/mcp` и `/mcp-proxy`, чтобы
-транспортные воркеры и их дескрипторы не копились после шторма
-пересоздания сессий. `idle_ttl_secs` также задаёт rmcp `keep_alive`.
+Idle GC not only marks the registry entry as `closed`, but also calls
+`LocalSessionManager::close_session` on `/mcp` and `/mcp-proxy`. This prevents
+transport workers and their descriptors from accumulating after a storm of
+session recreation. `idle_ttl_secs` also sets the rmcp `keep_alive` value.
 
-SSE GET / resume с `Mcp-Session-Id` делает `registry.touch` (без
-`request_count`), чтобы idle GC не рвал живой стрим, пока rmcp
-`keep_alive` ещё сбрасывается на transport-событиях.
+SSE GET / resume requests with `Mcp-Session-Id` call `registry.touch` (without
+incrementing `request_count`) so idle GC does not terminate a live stream
+while rmcp `keep_alive` is still being reset by transport events.
 
 ---
 
-## Раскладка на диске
+## On-disk layout
 
 ```text
 sessions/                          # recorder.sessions_dir
   .registry/
-    <session_id>.json              # SessionRegistry (переживает перезапуск)
+    <session_id>.json              # SessionRegistry (survives restarts)
   <client_id>/
-    <session_id>.jsonl             # дамп обмена JSON-RPC / MCP
-    <session_id>.meta.json         # метаданные дампа для слияния в admin UI
+    <session_id>.jsonl             # JSON-RPC / MCP exchange dump
+    <session_id>.meta.json         # dump metadata for merging in the admin UI
 ```
 
-| Путь | Роль |
+| Path | Role |
 | ---- | ---- |
-| `.registry/{id}.json` | Живая запись registry: client, счётчики, `active` / `closed` |
-| `{client}/{id}.jsonl` | Append-only запись обмена (чувствительные ключи отредактированы) |
-| `{client}/{id}.meta.json` | Сводка дампа (`started_at`, `request_count`, `upstream`, …) |
+| `.registry/{id}.json` | Live registry entry: client, counters, `active` / `closed` |
+| `{client}/{id}.jsonl` | Append-only exchange record (sensitive keys are redacted) |
+| `{client}/{id}.meta.json` | Recording summary (`started_at`, `request_count`, `upstream`, …) |
 
-`SessionRegistry::open(sessions_dir)` при запуске загружает каждый `.registry/*.json`.
-`record_request` / `close` / idle GC атомарно перезаписывают соответствующий файл (`.json.tmp` → rename).
+At startup, `SessionRegistry::open(sessions_dir)` loads every
+`.registry/*.json` file. `record_request` / `close` / idle GC atomically
+rewrite the corresponding file (`.json.tmp` → rename).
 
-Повреждённые, нечитаемые JSON-файлы или файлы с некорректным id пропускаются с предупреждением.
+Corrupt or unreadable JSON files and files with invalid IDs are skipped with
+a warning.
 
 ---
 
-## Что переживает перезапуск
+## What survives a restart
 
-| Данные | Переживают? |
+| Data | Survives? |
 | ---- | --------- |
-| Записи registry (`.registry/`) | **Да** — перезагружаются; статус сохраняется до срабатывания idle GC |
-| Дампы обмена (`.jsonl` / `.meta.json`) | **Да** |
-| DCR OAuth `client_id` + уникальный `name` | **Да** — SQLite `auth.clients_db_path` ([authentication.md](authentication.md#dcr-clients-survive-restart)) |
-| Активный MCP-транспорт / rmcp-сессия | **Нет** — клиент должен переподключиться |
-| OAuth JWT access-токены | **Нет** — нужен повторный consent; либо используйте статические `pre-reg` токены |
+| Registry entries (`.registry/`) | **Yes** — reloaded; status is retained until idle GC runs |
+| Exchange recordings (`.jsonl` / `.meta.json`) | **Yes** |
+| DCR OAuth `client_id` + unique `name` | **Yes** — SQLite `auth.clients_db_path` ([authentication.md](authentication.md#dcr-clients-survive-restart)) |
+| Active MCP transport / rmcp session | **No** — the client must reconnect |
+| OAuth JWT access tokens | **No** — consent is required again; alternatively, use static `pre-reg` tokens |
 
-Очистка «повисших» дампов при старте. Если процесс, писавший дамп обмена, аварийно завершился посреди сессии, его meta-файл (.meta.json) остаётся в статусе active, хотя запись давно прекратилась. Поэтому при каждом запуске recorder выполняет startup_cleanup: находит такие застрявшие meta-файлы и переводит их в closed. Эта процедура работает только с дампами и не затрагивает записи .registry/.
+Stale recordings are cleaned up at startup. If a process writing an exchange
+recording crashes in the middle of a session, its meta file (.meta.json)
+remains in the active state even though recording stopped long ago. On every
+startup, the recorder therefore runs startup_cleanup: it finds these stale
+meta files and moves them to the closed state. This procedure operates only
+on recordings and does not affect .registry/ entries.
 
 ---
 
 ## Admin UI
 
-`GET /admin/api/sessions` объединяет:
+`GET /admin/api/sessions` combines:
 
-1. DCR / pre-reg clients (каждый с уникальным операторским `name`)
-2. Живой снимок `SessionRegistry` (из `.registry/`)
-3. Дамповые meta-файлы на диске в подкаталогах клиентов
+1. DCR / pre-reg clients (each with a unique operator-facing `name`)
+2. A live `SessionRegistry` snapshot (from `.registry/`)
+3. Recording meta files from client subdirectories on disk
 
-Переименовать client можно из колонки Sessions (поле ввода) или через
-`PATCH /admin/api/sessions/:client_id` с телом `{"name":"…"}`.
+A client can be renamed in the Sessions column (using its input field) or
+through `PATCH /admin/api/sessions/:client_id` with the body `{"name":"…"}`.
 
-Монтируйте `sessions_dir` как **writable** volume в Docker, чтобы registry и дампы сохранялись при пересоздании контейнера.
+Mount `sessions_dir` as a **writable** Docker volume so the registry and
+recordings survive container recreation.
 
 ---
 
-## Покрытие
+## Coverage
 
-`sessions.rs` включён в llvm-cov gate для vmcp-server вместе с
-`skills.rs`, `tasks.rs` и модулями prompt aggregation (порог **93%** line coverage):
+`sessions.rs` is included in the vmcp-server llvm-cov gate together with
+`skills.rs`, `tasks.rs`, and the prompt aggregation modules (the line coverage
+threshold is **96%**):
 
 ```bash
-cargo llvm-cov -p vmcp-server --lib --fail-under-lines 93 \
+cargo llvm-cov -p vmcp-server --lib --fail-under-lines 96 \
   --ignore-filename-regex '(^|/)(otel_file|proxy|lib|recorder)\.rs$'
 ```
 
-Юнит-тесты: `cargo test -p vmcp-server --lib sessions::`.
+Unit tests: `cargo test -p vmcp-server --lib sessions::`.
 
-См. также [skills.md](skills.md#tests--coverage),
-[clients.md](clients.md#admin-ui), [deployment.md](deployment.md),
+See also [skills.md](skills.md#tests--coverage),
+[clients.md](clients.md#admin-ui), [deployment.md](deployment.md), and
 [builds-and-modes.md](builds-and-modes.md).

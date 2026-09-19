@@ -1,27 +1,29 @@
 # vmcp
 
-[![coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/hewimetall/vmcp/main/docs/badges/coverage.json)](https://github.com/hewimetall/vmcp/actions/workflows/coverage.yml)
+**Language:** English | [Русский](README.ru.md)
 
-MCP gateway на Rust. Собирает несколько upstream MCP-серверов в один GraphQL endpoint. Agent делает один вызов `query_graphql` вместо кучи round-trips.
+[![coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/hewimetall/vmcp/main/docs/badges/coverage.json)](https://github.com/hewimetall/vmcp/actions/workflows/ci.yml)
 
-## Зачем
+An MCP gateway written in Rust. It aggregates multiple upstream MCP servers behind a single GraphQL endpoint, allowing an agent to make one `query_graphql` call instead of many round trips.
 
-- **Один tool `query_graphql`** — шлёшь GraphQL, vmcp разводит запросы по upstreams. Read — параллельно, write — последовательно.
-- **Dynamic schema** — строится при старте из upstream `tools/list`.
-- **Tasks (опционально)** — long-running tools как durable tasks на SQLite.
-- **OAuth 2.1 + PKCE + DCR** — или static bearer tokens.
-- **Hot-reload** — токены, `registry.json` и промпты обновляются без рестарта.
-- **GCF output (опционально)** — `[gql].gcf` для `query_graphql` (`/mcp`), `[proxy].gcf` для `/mcp-proxy`. [GCF](https://gcformat.com/) вместо JSON.
-- **`/api/v1`** — operator Token CRUD + upstreams reload (Bearer `mcp:admin`).
+## Why vmcp
 
-## Старт
+- **One `query_graphql` tool** — send GraphQL and vmcp routes requests to the upstream servers. Reads run in parallel; writes run sequentially.
+- **Dynamic schema** — built at startup from upstream `tools/list` responses.
+- **Tasks (optional)** — run long-running tools as durable tasks backed by SQLite.
+- **OAuth 2.1 + PKCE + DCR** — or static bearer tokens.
+- **Hot reload** — tokens, `registry.json`, and prompts update without a restart.
+- **GCF output (optional)** — `[gql].gcf` for `query_graphql` (`/mcp`) and `[proxy].gcf` for `/mcp-proxy`. Use [GCF](https://gcformat.com/) instead of JSON.
+- **`/api/v1`** — operator API for token CRUD and upstream reloads (Bearer `mcp:admin`).
+
+## Getting started
 
 ```bash
 docker pull ghcr.io/hewimetall/vmcp:1.0.0
 ./deploy/bootstrap.sh --domain gateway.example.com --tag 1.0.0
 ```
 
-Или из бинарника:
+Or run the binary directly:
 
 ```bash
 curl -fsSL -o vmcp.tgz "https://github.com/hewimetall/vmcp/releases/download/v1.0.0/vmcp-1.0.0-linux-x86_64.tar.gz"
@@ -29,23 +31,23 @@ tar -xzf vmcp.tgz
 ./vmcp --config ./demo/vmcp.toml
 ```
 
-Слушает `http://127.0.0.1:8765`:
+The gateway listens on `http://127.0.0.1:8765`:
 - `/mcp` — MCP endpoint
-- `/health` — liveness
-- OAuth surface (`/authorize`, `/token`, `/register`, …) — в демо auth выключен
+- `/health` — liveness endpoint
+- OAuth endpoints (`/authorize`, `/token`, `/register`, …) — authentication is disabled in the demo
 
-Демо: [`demo/README.md`](demo/README.md).
+Demo: [`demo/README.md`](demo/README.md).
 
-## Конфиг
+## Configuration
 
-Правишь `vmcp.toml`. Любой ключ переопределяется через `VMCP_*` env (nested — через `__`):
+Edit `vmcp.toml`. Any key can be overridden with a `VMCP_*` environment variable; use `__` for nested keys:
 
 ```bash
 VMCP_AUTH__MASTER_PASSWORD_ARGON2='$argon2id$...' cargo run -p vmcp
 # Advertise MCP 2026-07-28 (off by default): VMCP_MCP__LATEST=true
 ```
 
-Утилиты:
+Utilities:
 
 ```bash
 cargo run -p vmcp -- init
@@ -61,9 +63,9 @@ cargo run -p vmcp -- hash-password --password 'secret'
 cargo run -p vmcp -- print-config
 ```
 
-### Static tokens (для CI)
+### Static tokens (for CI)
 
-OAuth выдаёт короткоживущие JWT, которые дохнут после рестарта. Для CI/demo используй бессрочный bearer:
+OAuth issues short-lived JWTs that become invalid after a restart. For CI and demos, use a non-expiring bearer token:
 
 ```bash
 cargo run -p vmcp -- pre-reg --name ci --scope mcp:use --out ./tokens.json
@@ -79,15 +81,15 @@ tokens_file = "./tokens.json"
 curl -H "Authorization: Bearer vmcp_xK3v..." http://127.0.0.1:8765/mcp
 ```
 
-Файл hot-reload'ится. **Удалил строку = отозвал токен.** Это god-key без expiry — храни как secret.
+The file is hot-reloaded. **Removing a line revokes that token.** These are unrestricted tokens with no expiration, so store them as secrets.
 
-### Отключить auth (только локально)
+### Disable authentication (local use only)
 
-`auth.enabled = false` — снимает bearer с `/mcp` и прячет `/admin`. **Никогда в проде.**
+`auth.enabled = false` removes bearer-token protection from `/mcp` and hides `/admin`. **Never use this setting in production.**
 
-### Локальный stdio (Claude Desktop, Cursor)
+### Local stdio (Claude Desktop, Cursor)
 
-vmcp — только HTTP. Для stdio используй [vmcp-lite](https://github.com/hewimetall/vmcp-lite):
+vmcp supports HTTP only. For stdio, use [vmcp-lite](https://github.com/hewimetall/vmcp-lite):
 
 ```json
 {
@@ -100,32 +102,32 @@ vmcp — только HTTP. Для stdio используй [vmcp-lite](https://
 }
 ```
 
-## Сборка
+## Build
 
 ```bash
 cargo build --release -p vmcp                        # + admin UI (default)
-cargo build --release -p vmcp --no-default-features  # без admin UI
+cargo build --release -p vmcp --no-default-features  # without admin UI
 ```
 
 ## Crates
 
-| Crate | Назначение |
-| ----- | ---------- |
-| `vmcp` | Entry binary (axum + rmcp). |
-| `vmcp-config` | Config (figment + TOML + env). |
-| `vmcp-registry` | `registry.json`, specs, lock. |
-| `vmcp-upstream` | Пул upstream MCP-клиентов. |
+| Crate | Purpose |
+| ----- | ------- |
+| `vmcp` | Entry-point binary (axum + rmcp). |
+| `vmcp-config` | Configuration (figment + TOML + environment variables). |
+| `vmcp-registry` | `registry.json`, specs, and lock file. |
+| `vmcp-upstream` | Pool of upstream MCP clients. |
 | `vmcp-graphql` | Dynamic GraphQL schema. |
-| `vmcp-auth` | OAuth 2.1 + PKCE + DCR, JWKS. |
-| `vmcp-server` | MCP surface, tasks, skills. |
+| `vmcp-auth` | OAuth 2.1 + PKCE + DCR and JWKS. |
+| `vmcp-server` | MCP surface, tasks, and skills. |
 | `vmcp-notify` | Notification ring buffer. |
-| `vmcp-admin` | Admin UI + recordings. |
-| `vmcp-watch` | File watcher, hot-reload. |
+| `vmcp-admin` | Admin UI and recordings. |
+| `vmcp-watch` | File watcher and hot reload. |
 
-## Документация
+## Documentation
 
-Полное руководство: [`docs/README.md`](docs/README.md) — deployment, auth, upstreams, tasks, skills, clients.
+See [`docs/README.md`](docs/README.md) for the full guide to deployment, authentication, upstream servers, tasks, skills, and clients.
 
-## Лицензия
+## License
 
-MIT — см. [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).

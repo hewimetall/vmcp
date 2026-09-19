@@ -1,0 +1,264 @@
+# Регистрация upstream-сервисов
+
+**Язык:** [English](../upstreams.md) | Русский
+
+Как регистрировать MCP-бэкенды и как их **tools** и **prompts** появляются на `/mcp` и `/mcp-proxy`.
+
+При запуске шлюз:
+
+1. Грузит **`registry.json`** → запускает/подключает каждый upstream
+2. Вызывает **`tools/list`** (+ опц. **`prompts/list`**)
+3. Мёржит **sidecar**-переопределения → пишет **`tools.lock.json`**
+4. Собирает GraphQL-схему + грузит YAML-**skills** как MCP-промпты
+
+| Ключ конфига | Default | Роль |
+| --- | ------- | ---- |
+| `registry_path` | `./registry.json` | Каталог upstream-сервисов |
+| `spec_dir` | `./specs` | Sidecar JSON |
+| `lock_path` | `./tools.lock.json` | Снимок tools при boot (аудит/drift) |
+| `skills_dir` | `./skills` | YAML → MCP-промпты |
+| `[upstream].spawn_timeout_ms` | `30000` | Бюджет запуска |
+| `[upstream].call_timeout_ms` | `60000` | Бюджет одного вызова |
+| `[proxy].enabled` | off | Upstream-промпты + `/mcp-proxy` |
+| `[proxy].gcf` | off | GCF вместо JSON на `/mcp-proxy` (не зависит от `[gql].gcf`) |
+
+Env: `VMCP_REGISTRY_PATH`, `VMCP_SPEC_DIR`, `VMCP_LOCK_PATH`, `VMCP_SKILLS_DIR`, …
+Демо-стенд: [`demo/vmcp.toml`](../../demo/vmcp.toml) + [`demo/README.ru.md`](../../demo/README.ru.md)
+(paths и `[upstream]` timeouts уже в toml — не задавай частичный `VMCP_UPSTREAM__*`).
+
+### Ограничения (operator)
+
+| Тема | Поведение |
+| ---- | --------- |
+| Skills с диска | Hot-reload **нет** — правки YAML требуют restart, либо Admin Skills CRUD (G07) |
+| Stdio в cluster image | Runtime image без Node/`uv` — в k8s используй **HTTP** upstreams (G08) |
+| HA | Один replica + RWO PVC; pool/schema in-memory — multi-replica **не** поддерживается (G12) |
+| Health | `connected` обновляется по RPC outcome; idle dead upstream без вызовов может долго казаться up (G24) |
+| `${ENV}` | Missing var → **ошибка** load registry (strict) |
+| Размер registry | Max **256** upstreams; duplicate `name` → ошибка |
+| Каталог (G25) | `upstream:<name>` whitelist режет `servers` / `search` / GraphQL schema / `/mcp-proxy` `tools/list`. `mcp:admin` — полный вид. Контракт: [ADR 0002](../adr/0002-per-caller-catalog-visibility.md) |
+
+---
+
+## 1. Upstream-сервисы (`registry.json`)
+
+Правится вручную или через CLI:
+
+```bash
+vmcp init                                      # vmcp.toml + пустой registry.json + dirs
+vmcp add mcp --transport http notion https://mcp.notion.com/mcp
+vmcp add mcp --bearer '${API_KEY}' --transport http secure https://api.example.com/mcp
+vmcp add mcp --transport stdio time -- uvx mcp-server-time
+# ↑ connect + tools/list → пишет specs/<name>.json и sidecar_spec (или --no-spec)
+vmcp add tool presentation build_presentation --task-support optional   # ручной upsert
+vmcp add skill search_docs --description 'docs' --template 'Call query_graphql…'
+vmcp add tasks                                 # [tasks] enabled = true в vmcp.toml
+vmcp list mcp|tool|skill
+vmcp get mcp time
+vmcp remove tool presentation build_presentation
+```
+
+`vmcp mcp add …` — алиас на `vmcp add mcp …`. Опции (`--transport`, `--env`, `--bearer`, …) — **до** имени сервера; для stdio команда и args — после `--`. Пути из `--config` / `VMCP_CONFIG`. `${ENV}` в registry не раскрываются при записи; для probe env должен быть задан (иначе `--no-spec`). Sidecar: автоген из `tools/list` или ручной `add tool`.
+
+Нет файла → пустой пул (шлюз стартует). Единственный ключ списка — **`upstreams`** (legacy `servers` в 1.0 = ошибка парсинга).
+
+```json
+{
+  "upstreams": [
+    {
+      "name": "presentation",
+      "description": "MCP presentation builder (PDF/web).",
+      "transport": "http",
+      "url": "http://127.0.0.1:8001/mcp",
+      "enabled": true,
+      "sidecar_spec": "presentation.json"
+    }
+  ]
+}
+```
+
+**Общие поля:** `name` (обязателен → GraphQL namespace + proxy-префикс), `description`, `transport` (`stdio` default / `http`), `enabled` (default true), `sidecar_spec`.
+
+**stdio:** `command`, `args`, `env` (`${VAR}` раскрывается), `cwd`.
+**http:** `url`, `bearer` (raw token → `Authorization: Bearer …` — **service** credential), `forward_identity` (default **`false`**).
+
+### Caller identity → HTTP upstream (opt-in)
+
+Смешанный кластер: **внешние** SaaS и **внутренние** адаптеры рядом.
+
+| Upstream | `forward_identity` | Зачем |
+| -------- | ------------------ | ----- |
+| Notion / Context7 / … | `false` (default) | не светить subject/groups наружу |
+| `stand-api-mcp` / cluster adapters | `true` | adapter проверяет tenancy по `X-Vmcp-*` |
+
+```bash
+# внешний — по умолчанию без identity
+vmcp add mcp --transport http notion https://mcp.notion.com/mcp
+
+# внутренний — явно включить
+vmcp add mcp --transport http --forward-identity stand_api http://stand-api.svc/mcp
+```
+
+Когда `forward_identity = true` и caller известен, на `tools/call` уходит:
+
+| Header | Содержание |
+| ------ | ---------- |
+| `Authorization` | только registry `bearer` (не user JWT) |
+| `X-Vmcp-Subject` | subject |
+| `X-Vmcp-Groups` | группы через `,` |
+| `X-Vmcp-Client-Id` | client_id |
+| `X-Vmcp-Scope` | MCP scopes |
+
+Эти заголовки ставит **vmcp** после своей auth, не клиент. Контракт: [ADR 0001](../adr/0001-forward-auth-trust-and-identity-propagation.md).
+
+```json
+{
+  "name": "tavily",
+  "transport": "http",
+  "url": "https://mcp.tavily.com/mcp/",
+  "bearer": "${TAVILY_API_KEY}",
+  "enabled": true
+}
+```
+
+`${ENV}` раскрывается в `url`/`bearer`/`env` (секреты не в git; отсутствие переменной → **ошибка загрузки registry**).
+
+**При запуске:** все upstream стартуют параллельно; упавший логируется, шлюз продолжает с частичным пулом. Медленный `npx`/venv → подними `spawn_timeout_ms`.
+
+---
+
+## 2. Инструменты (авторезолв)
+
+Tools не нужно перечислять вручную — vmcp вызывает `tools/list` и строит из него GraphQL-поля.
+
+```
+tools/list → CachedTool → sidecar overrides → ResolvedTool → GraphQL + tools.lock.json
+```
+
+| Источник | Эффект |
+| ------ | ------ |
+| `readOnlyHint: true` | → **`Query.<server>`** (параллельно) |
+| отсутствует / `false` | → **`Mutation.<server>`** (последовательно, безопаснее) |
+| `execution.taskSupport` | В allowlist `run_task` (если `[tasks]`) |
+| Sidecar | Переопределяет `read_only`/`description`/`task_support` |
+
+Агрегация: [aggregation.md](aggregation.md). Allowlist задач: [tasks.md](tasks.md#какие-инструменты-появляются-в-run_task).
+
+### Sidecar specs (`spec_dir`)
+
+Опциональный JSON — когда аннотации upstream отсутствуют/неверны (частая беда сторонних пакетов).
+
+```json
+{
+  "server": "presentation",
+  "tools": [
+    { "name": "list_sessions", "read_only": true },
+    { "name": "build_presentation", "read_only": false, "task_support": "optional" }
+  ]
+}
+```
+
+Путь = `spec_dir` + filename (или абсолютный). Записи без совпадения с живым tool игнорятся (фантомы не создаются).
+
+### `tools.lock.json`
+
+Снимок tools после мёржа (name, schema, `read_only`, `task_support`) — baseline для `detect_drift` (изменение только description ≠ drift). Перезаписывается при каждом запуске — **вручную не редактируй в проде**.
+
+### Где появляются tools
+
+| Поверхность | Форма |
+| ------- | ------ |
+| `/mcp` → `query_graphql` | `Query.<server>.<tool>` / `Mutation.<server>.<tool>` |
+| `/mcp` → `run_task` | Только task-capable из allowlist (`[tasks]`) |
+| `/mcp-proxy` | Плоские `{server}__{tool}` (`[proxy]`) |
+
+### Hot-swap / watchers
+
+| Что | Механизм | Поведение |
+| --- | -------- | --------- |
+| GraphQL schema | `ArcSwap` + `swap_schema` | Атомарная подмена |
+| Skills | Admin CRUD → reload | Без рестарта |
+| Static tokens | `vmcp-watch` на `tokens_file` | Hot-reload после rename |
+| **Registry (`registry.json`)** | recursive watch + mtime poll + `POST /api/v1/upstreams/reload` | Add/remove/replace upstreams, rebuild schema. В k8s CM надёжнее вызывать API reload после apply |
+| Upstream prompts | `prompts/list_changed` → `refresh_prompts` | Кэш + forward клиентам |
+| Upstream tools | `tools/list_changed` → `refresh_tools` + rebuild GraphQL | Кэш + schema + forward клиентам |
+
+`vmcp-watch` — общий file-watcher (parent dir + фильтр по имени, переживает tmp→rename). Висит на `tokens_file` и на `registry_path`.
+
+Operator status: `GET /api/v1/upstreams` (Bearer `mcp:admin`) — `connected`, `tool_count`, `last_error`, `last_ok_unix_ms`.<br>
+Readiness probe: `GET /ready` (soft: если в registry есть enabled upstreams и ни один не `connected` → 503; `/health` остаётся liveness).<br>
+Legacy `GET /admin/api/servers` без изменений.
+
+---
+
+<a id="3-register-prompts"></a>
+## 3. Промпты
+
+| Источник | Регистрация | Имена | Всегда? |
+| ------ | ---------------- | ----- | ---------- |
+| **Локальные skills** | YAML в `skills_dir` | голое `name` | Да |
+| **Upstream-промпты** | upstream `prompts/list` | `{server}__{prompt}` | Только `[proxy] enabled` |
+
+### Локальные skills
+
+YAML-playbook → MCP `prompts/*` + GraphQL `prompts`/`getPrompt`/`searchPrompts`. Полная схема + Admin CRUD: [skills.md](skills.md).
+
+```yaml
+name: search_docs
+description: Look up library docs via Context7.
+arguments:
+  - name: library
+    required: true
+template: |
+  Call query_graphql with:
+  { context7 { resolveLibraryId(libraryName: "{{library}}") { json } } }
+```
+
+- `name` без `__` (зарезервировано под upstream-префикс)
+- Диск читается **при запуске** — после ручных правок перезапускай
+- Admin-вкладка **Skills** — CRUD с hot-swap без рестарта
+
+### Upstream-промпты
+
+Забираются при старте (`prompts/list`). Нет capability / пустой список → продолжаем без них.
+
+```toml
+[proxy]
+enabled = true
+mcp_path = "/mcp-proxy"   # ≠ основному mcp_path
+```
+
+Default в коде `false`; в поставляемом `vmcp.toml` demo proxy **включён**. Флаг монтирует tools+prompts на `/mcp-proxy` и включает upstream-промпты в GraphQL на `/mcp`.
+
+При `getPrompt` vmcp добавляет в начало **таблицу маршрутизации GraphQL-инструментов** (по возможности сужённую до упомянутых tools). Вызывай tools через `query_graphql` на `/mcp`.
+
+`prompts/list_changed` обновляет кэш и форвардится клиентам (если объявлен `prompts.listChanged`).
+
+---
+
+## Чеклист: новый upstream end-to-end
+
+1. **Сервис** — `vmcp mcp add …` или ручная запись в `registry.json` (`stdio`/`http`)
+2. **Sidecar** (опц.) — `specs/<name>.json` + `sidecar_spec`
+3. **Skills** (опц.) — YAML, учит агента GraphQL-форме сервера
+4. **Proxy** (опц.) — `[proxy] enabled = true` для `{server}__*` tools/prompts
+5. **Tasks** (опц.) — `task_support` на долгих + `[tasks]` ([tasks.md](tasks.md))
+6. Рестарт (или hot-reload registry) + проверка:
+
+```bash
+curl -fsS http://127.0.0.1:8765/health
+# затем via MCP/GraphQL: { servers { name toolCount } } и { prompts { name source } }
+```
+
+---
+
+## Связанные документы
+
+| Тема | Документ |
+| ----- | --- |
+| Skill YAML + upstream-промпты | [skills.md](skills.md) |
+| `run_task` / `task_support` | [tasks.md](tasks.md) |
+| Агрегация Query vs Mutation | [aggregation.md](aggregation.md) |
+| Режимы / конфиг | [builds-and-modes.md](builds-and-modes.md) |
+| Production-монтирования | [deployment.md](deployment.md) |
+| Discovery для клиентов | [clients.md](clients.md) |

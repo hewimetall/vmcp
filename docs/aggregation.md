@@ -1,16 +1,19 @@
-# GraphQL-агрегация upstream-инструментов
+# GraphQL aggregation of upstream tools
 
-vmcp строит динамическую GraphQL-схему из `tools/list` всех upstream MCP
-серверов. Режим агрегации задаётся не отдельным флагом, а типом GraphQL
-операции, который выводится из `readOnlyHint` инструмента.
+**Language:** English | [Русский](ru/aggregation.md)
 
-| Аннотация инструмента | Куда попадает в схеме | Как исполняется |
-| --------------------- | --------------------- | --------------- |
-| `readOnlyHint = true` | `Query.<server>`      | параллельно     |
-| `readOnlyHint = false` или отсутствует | `Mutation.<server>` | последовательно |
+vmcp builds a dynamic GraphQL schema from the `tools/list` response of every
+upstream MCP server. The aggregation mode is determined not by a separate flag
+but by the GraphQL operation type, which is inferred from the tool's
+`readOnlyHint`.
 
-Разбиение выполняется при сборке схемы: читающие инструменты попадают в
-`Query`, пишущие - в `Mutation`.
+| Tool annotation | Schema location | Execution |
+| --------------- | --------------- | --------- |
+| `readOnlyHint = true` | `Query.<server>` | Parallel |
+| `readOnlyHint = false` or absent | `Mutation.<server>` | Sequential |
+
+The tools are partitioned when the schema is built: read-only tools go into
+`Query`, while write tools go into `Mutation`.
 
 ```rust
 let (reads, writes): (Vec<_>, Vec<_>) = tools.into_iter().partition(|t| t.read_only);
@@ -18,13 +21,13 @@ let (reads, writes): (Vec<_>, Vec<_>) = tools.into_iter().partition(|t| t.read_o
 // writes -> Mutation.<server>
 ```
 
-## Query: параллельное разветвление вызовов
+## Query: parallel call fan-out
 
-Поля одной GraphQL-операции `query` могут резолвиться конкурентно. В vmcp каждый
-инструмент является async-резолвером, который вызывает upstream через
-`pool.call(server, tool, args)`. Если в одном документе несколько алиасов к
-разным upstream-серверам, шлюз запускает вызовы параллельно и возвращает один
-GraphQL-ответ.
+Fields in a single GraphQL `query` operation can resolve concurrently. In vmcp,
+each tool is an async resolver that calls the upstream through
+`pool.call(server, tool, args)`. If one document contains multiple aliases that
+target different upstream servers, the gateway runs the calls in parallel and
+returns a single GraphQL response.
 
 ```graphql
 {
@@ -34,17 +37,18 @@ GraphQL-ответ.
 }
 ```
 
-Граница параллелизма - upstream-сессия. Внутри одного upstream вызовы защищены
-`call_lock`, потому что за сервером обычно стоит один stdio-пайп. Два алиаса к
-разным серверам выполняются параллельно; два алиаса к одному серверу на границе
-сессии выстраиваются в очередь. Для одного SQL-upstream лучше упаковывать
-связанные чтения в один SQL-запрос (`UNION ALL`, `JOIN`, `GROUP BY`, `CASE`).
+The upstream session is the concurrency boundary. Calls within one upstream are
+protected by `call_lock`, because a server usually has a single stdio pipe
+behind it. Two aliases targeting different servers run in parallel; two aliases
+targeting the same server are queued at the session boundary. For a single SQL
+upstream, prefer combining related reads into one SQL query with `UNION ALL`,
+`JOIN`, `GROUP BY`, or `CASE`.
 
-## Mutation: последовательные побочные эффекты
+## Mutation: sequential side effects
 
-Поля верхнего уровня операции `mutation` по спецификации GraphQL исполняются
-строго последовательно. Поэтому пишущие инструменты vmcp агрегируются серийно
-даже при обращении к разным upstream-серверам.
+The GraphQL specification requires top-level fields in a `mutation` operation
+to run strictly in sequence. vmcp therefore aggregates write tools
+sequentially, even when they target different upstream servers.
 
 ```graphql
 mutation {
@@ -53,53 +57,54 @@ mutation {
 }
 ```
 
-В этом примере `b` стартует только после полного завершения `a`. Такой режим
-используется для операций с побочными эффектами, где важен порядок.
+In this example, `b` starts only after `a` has finished completely. This mode is
+used for side-effecting operations where order matters.
 
-## Проверка агрегации
+## Verifying aggregation
 
-Поведение покрыто end-to-end тестом `crates/vmcp/tests/aggregation.rs`. Тест
-поднимает два настоящих stdio-upstream (`alpha` и `beta`) на базе
-`crates/vmcp/src/bin/mock_delay_upstream.rs`. Заглушка отдаёт `delay_read` и
-`delay_write`, спит заданное число миллисекунд и возвращает окно обслуживания
-вызова (`start_us` / `end_us`). По пересечению окон видно, были ли вызовы
-параллельными.
+This behavior is covered by the end-to-end test in
+`crates/vmcp/tests/aggregation.rs`. The test starts two real stdio upstreams,
+`alpha` and `beta`, based on `crates/vmcp/src/bin/mock_delay_upstream.rs`. The
+stub exposes `delay_read` and `delay_write`, sleeps for the specified number of
+milliseconds, and returns the call's execution window (`start_us` / `end_us`).
+Whether the windows overlap shows whether the calls ran in parallel.
 
-Запуск:
+Run it with:
 
 ```bash
 cargo test -p vmcp --test aggregation
 ```
 
-Для просмотра диагностических строк:
+To display the diagnostic output:
 
 ```bash
 cargo test -p vmcp --test aggregation -- --nocapture --test-threads=1
 ```
 
-Ожидаемая форма вывода:
+Expected output:
 
 ```text
 PARALLEL reads:     alpha=[..514542..816506] beta=[..514601..815537] wall=303ms (2x300ms sleeps)
 SEQUENTIAL writes:  alpha=[..828341..130088] beta=[..132632..434529] wall=608ms (2x300ms sleeps)
 ```
 
-Что проверяется:
+The test verifies that:
 
-- `reads_aggregate_in_parallel`: окна `alpha` и `beta` пересекаются, общее время
-  близко к одной задержке.
-- `writes_aggregate_sequentially`: окна не пересекаются, порядок сохранён,
-  общее время близко к сумме двух задержек.
+- `reads_aggregate_in_parallel`: the `alpha` and `beta` windows overlap, and the
+  total duration is close to a single delay.
+- `writes_aggregate_sequentially`: the windows do not overlap, their order is
+  preserved, and the total duration is close to the sum of both delays.
 
-## Долгие задачи и HTTP upstreams
+## Long-running tasks and HTTP upstreams
 
-Агрегация выше относится к одному синхронному GraphQL-документу. Для долгих
-прогонов используйте нативные MCP Tasks через `run_task` и SEP-1686; настройка
-`[tasks]`, списка разрешённых `task_support` инструментов и SQLite TaskStore описаны в
-[tasks.md](tasks.md).
+The aggregation described above applies to a single synchronous GraphQL
+document. For long-running operations, use native MCP Tasks through `run_task`
+and SEP-1686. The `[tasks]` configuration, allowlist of `task_support` tools,
+and SQLite TaskStore are documented in [tasks.md](tasks.md).
 
-HTTP upstream подключается через `transport = "http"` и `url` на Streamable HTTP
-MCP-эндпоинт; секреты передавайте через переменные окружения и `bearer`.
+Configure an HTTP upstream with `transport = "http"` and a `url` pointing to a
+Streamable HTTP MCP endpoint. Pass secrets through environment variables and
+`bearer`.
 
 ```json
 {
@@ -110,10 +115,10 @@ MCP-эндпоинт; секреты передавайте через пере�
 }
 ```
 
-## Формат ответа `query_graphql`
+## `query_graphql` response format
 
-MCP tool text по умолчанию — компактный JSON envelope. Опциональный флаг
-`[gql].gcf = true` (env `VMCP_GQL__GCF`) кодирует тот же envelope как
-[GCF](https://gcformat.com/) generic profile. Отдельный флаг `[proxy].gcf`
-(env `VMCP_PROXY__GCF`) делает то же для `/mcp-proxy`.
-См. [builds-and-modes.md](builds-and-modes.md#gcf-output-опционально-два-флага).
+MCP tool text defaults to a compact JSON envelope. The optional
+`[gql].gcf = true` flag (env `VMCP_GQL__GCF`) encodes the same envelope using
+the [GCF](https://gcformat.com/) generic profile. The separate `[proxy].gcf`
+flag (env `VMCP_PROXY__GCF`) does the same for `/mcp-proxy`.
+See [builds-and-modes.md](builds-and-modes.md#gcf-output-optional-two-flags).

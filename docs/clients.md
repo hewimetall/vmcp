@@ -1,27 +1,29 @@
-# Подключение клиентов
+# Connecting clients
+
+**Language:** English | [Русский](ru/clients.md)
 
 ## Cursor / VS Code MCP (HTTP + OAuth)
 
-1. Разверните vmcp с публичным HTTPS-адресом (см. [deployment.md](deployment.md)).
-2. В настройках Cursor MCP добавьте **удалённый HTTP-сервер**:
+1. Deploy vmcp at a public HTTPS URL (see [deployment.md](deployment.md)).
+2. Add a **remote HTTP server** in Cursor's MCP settings:
    - URL: `https://<domain>/mcp`
-3. При первом подключении Cursor проходит DCR + PKCE и открывает `/consent` в браузере. Gateway сохраняет `client_id` из DCR в SQLite (`auth.clients_db_path`), поэтому после рестарта он продолжает работать — обновить нужно только JWT.
-4. Введите **мастер-пароль** (открытым текстом, не argon2-хеш).
-5. Cursor сохраняет JWT и добавляет заголовок `Authorization: Bearer …` при запросах на `/mcp`.
+3. On the first connection, Cursor completes DCR + PKCE and opens `/consent` in a browser. The gateway persists the DCR `client_id` in SQLite (`auth.clients_db_path`), so it remains valid after a restart; only the JWT needs to be refreshed.
+4. Enter the **master password** in plain text, not its Argon2 hash.
+5. Cursor stores the JWT and adds the `Authorization: Bearer …` header to requests to `/mcp`.
 
-Если OAuth падает сразу, проверьте:
+If OAuth fails immediately, check that:
 
-- `public_base_url` совпадает с адресом в браузере (схема + хост);
-- `/.well-known/oauth-protected-resource` отвечает 200 (vmcp обслуживает и «голый» путь, и `/mcp`);
-- хеш мастер-пароля в текущем конфиге (`print-config`).
+- `public_base_url` matches the browser URL, including the scheme and host;
+- `/.well-known/oauth-protected-resource` returns 200 (vmcp serves both the bare path and the `/mcp` variant);
+- the master-password hash is present in the active configuration (`print-config`).
 
 ---
 
-## Локальный stdio-хост → vmcp-lite
+## Local stdio host → vmcp-lite
 
-vmcp — это только HTTP-gateway. Для локальных MCP-хостов, которые общаются через stdin/stdout (Claude Desktop, Cursor pipe), есть отдельный проект **[vmcp-lite](https://github.com/hewimetall/vmcp-lite)** — вход только через stdio.
+vmcp is an HTTP-only gateway. For local MCP hosts that communicate through stdin/stdout, such as Claude Desktop or a Cursor pipe, use the separate **[vmcp-lite](https://github.com/hewimetall/vmcp-lite)** project, which accepts input only through stdio.
 
-Установка: `uvx vmcp-lite-mcp` или `pip install vmcp-lite-mcp` (команда `vmcp-lite`). Пропишите его в `mcp.json` хоста:
+Install it with `uvx vmcp-lite-mcp` or `pip install vmcp-lite-mcp` (the command is `vmcp-lite`). Add it to the host's `mcp.json`:
 
 ```json
 {
@@ -34,17 +36,17 @@ vmcp — это только HTTP-gateway. Для локальных MCP-хос�
 }
 ```
 
-Демо и подробности — в репозитории vmcp-lite (`examples/demo`).
+See `examples/demo` in the vmcp-lite repository for a demo and more details.
 
 ---
 
-## curl / скрипты (статический токен)
+## curl / scripts (static token)
 
-Лучший вариант для автоматизации: в отличие от JWT, он переживает рестарты gateway.
+This is the preferred option for automation: unlike a JWT, a static token remains valid across gateway restarts.
 
 ```bash
 TOKEN=$(cargo run -q -p vmcp -- pre-reg --name bot --out ./tokens.json)
-# добавьте tokens_file в vmcp.toml, перезапустите один раз, затем:
+# Add tokens_file to vmcp.toml, restart once, then:
 curl -sS https://gateway.example.com/mcp \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
@@ -52,58 +54,58 @@ curl -sS https://gateway.example.com/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
 ```
 
-MCP streamable HTTP работает через SSE, поэтому передавайте `Accept: application/json, text/event-stream`. После `initialize` берите заголовок ответа `Mcp-Session-Id` и повторяйте его в следующих запросах.
+MCP Streamable HTTP uses SSE, so send `Accept: application/json, text/event-stream`. After `initialize`, read the `Mcp-Session-Id` response header and include it in subsequent requests.
 
 ---
 
-## curl / скрипты (полный OAuth)
+## curl / scripts (full OAuth)
 
-См. bash-пример в [authentication.md](authentication.md#scripted-smoke-test). На шаге `POST /consent` понадобится мастер-пароль.
-
----
-
-## Панель администратора
-
-`https://<domain>/admin` — авторизация по **HTTP Basic** (имя пользователя любое, пароль = мастер-пароль открытым текстом). Это не Bearer JWT и не токен `vmcp_…`, который используется на `/mcp`.
-
-Что даёт панель: статус upstream'ов, записи сессий, обозреватель схемы, CRUD для skills, сравнение `/mcp` и `/mcp-proxy`.
-
-Список сессий и dumps хранятся в `[recorder].sessions_dir` как JSON в каталогах (`.registry/{id}.json` + отдельные `.jsonl` / `.meta.json` для каждого клиента) и **сохраняются после рестартов gateway**. Подробности: **[sessions.md](sessions.md)**.
-
-Skill-playbook'и (YAML в `skills_dir` → MCP `prompts/list` / `prompts/get`, а также GraphQL `prompts` / `getPrompt`): **[skills.md](skills.md)**. Upstream-промпты (`{server}__{name}`) требуют `[proxy]` (GraphQL на `/mcp` и MCP `prompts/*` на `/mcp-proxy`). Регистрация services / tools / prompts: **[upstreams.md](upstreams.md)**.
+See the Bash example in [authentication.md](authentication.md#scripted-smoke-test). You will need the master password for the `POST /consent` step.
 
 ---
 
-## Использование GraphQL-инструмента
+## Admin dashboard
 
-Основной инструмент — **`query_graphql`**: передайте ему GraphQL-документ. Порядок discovery («лестница»):
+`https://<domain>/admin` uses **HTTP Basic** authentication. The username can be any value, and the password is the master password in plain text. This is not a Bearer JWT or the `vmcp_…` token used on `/mcp`.
 
-1. `{ prompts { … } }` / `{ getPrompt(name) { text } }` (или MCP `prompts/list`) — skill-playbook'и ([skills.md](skills.md)).
+The dashboard shows upstream status and session recordings, provides a schema explorer and CRUD operations for skills, and compares `/mcp` with `/mcp-proxy`.
+
+The session list and dumps are stored as JSON under `[recorder].sessions_dir` (`.registry/{id}.json` plus separate `.jsonl` / `.meta.json` files for each client) and **persist across gateway restarts**. For details, see **[sessions.md](sessions.md)**.
+
+Skill playbooks (YAML in `skills_dir` → MCP `prompts/list` / `prompts/get`, as well as GraphQL `prompts` / `getPrompt`) are documented in **[skills.md](skills.md)**. Upstream prompts (`{server}__{name}`) require `[proxy]` (GraphQL on `/mcp` and MCP `prompts/*` on `/mcp-proxy`). For service, tool, and prompt registration, see **[upstreams.md](upstreams.md)**.
+
+---
+
+## Using the GraphQL tool
+
+The primary tool is **`query_graphql`**. Pass it a GraphQL document. Use the following discovery order, or “ladder”:
+
+1. `{ prompts { … } }` / `{ getPrompt(name) { text } }` (or MCP `prompts/list`) for skill playbooks ([skills.md](skills.md)).
 2. `{ servers { name description toolCount readOnlyCount } }`.
 3. `{ search(q: "time filesystem") { server tool readOnly taskSupport description } }` / `{ searchPrompts(q) { … } }`.
 4. `__type(name: "Query")` / `__type(name: "Mutation")`.
 
-Чтения агрегируются параллельно; записи выполняются последовательно, по одному upstream за раз. Подробности: [aggregation.md](aggregation.md).
+Reads are aggregated in parallel; writes run sequentially, one upstream at a time. For details, see [aggregation.md](aggregation.md).
 
-Демо: [`demo/README.md`](../demo/README.md) (`./vmcp --config ./demo/vmcp.toml`,
-auth выключен). Записи — через `mutation { <server> { … } }`.
-
----
-
-## Долгие инструменты (`run_task`)
-
-Если включён `[tasks]` и upstream'ы объявляют `taskSupport`, клиенты дополнительно видят инструмент **`run_task`** (SEP-1686). Короткие и пакетные задачи оставляйте на `query_graphql`; долгие — запускайте через `run_task` (синхронно или с `task: {}` для асинхронного опроса).
-
-Полное руководство: **[tasks.md](tasks.md)**.
-
-Cursor сейчас обычно использует блокирующий tools/call с progress-уведомлениями — для него подойдёт GraphQL или синхронный run_task. Хосты с поддержкой задач могут запускать его в асинхронном режиме (поле task) и забирать результат через tasks/get / tasks/result.
+Demo: [`demo/README.md`](../demo/README.md) (`./vmcp --config ./demo/vmcp.toml`,
+with authentication disabled). Perform writes through `mutation { <server> { … } }`.
 
 ---
 
-## Проверка health
+## Long-running tools (`run_task`)
+
+When `[tasks]` is enabled and upstreams declare `taskSupport`, clients also see the **`run_task`** tool (SEP-1686). Keep short and batched work on `query_graphql`; launch long-running work through `run_task`, either synchronously or with `task: {}` for asynchronous polling.
+
+See **[tasks.md](tasks.md)** for the complete guide.
+
+Cursor currently tends to use blocking `tools/call` requests with progress notifications, so either GraphQL or synchronous `run_task` is suitable. Task-aware hosts can run it asynchronously using the `task` field, then retrieve the result through `tasks/get` / `tasks/result`.
+
+---
+
+## Health check
 
 ```bash
 curl -fsS https://<domain>/health    # → ok
 ```
 
-Балансировщики нагрузки могут обращаться к этому пути без авторизации.
+Load balancers can access this path without authentication.

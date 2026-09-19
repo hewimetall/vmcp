@@ -1,25 +1,27 @@
-# Документация vmcp
+# vmcp Documentation
 
-Руководство оператора по развертыванию и эксплуатации виртуального MCP gateway.
+**Language:** English | [Русский](ru/README.md)
 
-| Документ | Что описывает |
-| -------- | ------------- |
-| [deployment.md](deployment.md) | Развертывание через GHCR: Compose + Caddy, bare metal, TLS, переменные окружения, чеклист |
-| [authentication.md](authentication.md) | Поток OAuth 2.1, master password, static tokens, Authentik hop trust, dev-режим без auth |
-| [adr/0001-forward-auth-trust-and-identity-propagation.md](adr/0001-forward-auth-trust-and-identity-propagation.md) | ADR: trust для `X-authentik-*` + `X-Vmcp-*` identity на HTTP upstream |
-| [adr/0002-per-caller-catalog-visibility.md](adr/0002-per-caller-catalog-visibility.md) | ADR: каталог по `upstream:<name>` whitelist (G25), не только вызовы |
-| [builds-and-modes.md](builds-and-modes.md) | Cargo features, release-бинарники, HTTP gateway, опциональный `[tasks]` |
-| [upstreams.md](upstreams.md) | Регистрация upstream-сервисов, tools (sidecar + lock) и prompts |
-| [tasks.md](tasks.md) | Нативные MCP Tasks (`run_task`), SQLite store, allowlist, поток SEP-1686 |
-| [sessions.md](sessions.md) | Реестр admin sessions и записей (JSON в `sessions_dir`) |
-| [skills.md](skills.md) | YAML skill playbooks → MCP `prompts/list` / `prompts/get` |
-| [clients.md](clients.md) | Cursor HTTP+OAuth, скриптовые MCP/HTTP-клиенты, vmcp-lite для локального stdio host |
-| [bench.md](bench.md) | Опциональный Python-инструмент: замер пакетирования LLM-запросов `query_graphql` |
-| [aggregation.md](aggregation.md) | Как работает GraphQL-агрегация поверх upstream tools |
-| [mcp-2026-07-28.md](mcp-2026-07-28.md) | Оценка spec 2026-07-28, remap сессии, флаг `[mcp].latest`, паттерны шлюзов |
+Operator guide for deploying and operating the virtual MCP gateway.
 
-Быстрые ссылки из корня репозитория:
+| Document | Description |
+| -------- | ----------- |
+| [deployment.md](deployment.md) | Deployment from GHCR: Compose + Caddy, bare metal, TLS, environment variables, and checklist |
+| [authentication.md](authentication.md) | OAuth 2.1 flow, master password, static tokens, Authentik hop trust, and auth-free development mode |
+| [adr/0001-forward-auth-trust-and-identity-propagation.md](adr/0001-forward-auth-trust-and-identity-propagation.md) | ADR: trust for `X-authentik-*` headers and `X-Vmcp-*` identity on HTTP upstreams |
+| [adr/0002-per-caller-catalog-visibility.md](adr/0002-per-caller-catalog-visibility.md) | ADR: catalog filtering by the `upstream:<name>` whitelist (G25), not just call filtering |
+| [builds-and-modes.md](builds-and-modes.md) | Cargo features, release binaries, the HTTP gateway, and optional `[tasks]` |
+| [upstreams.md](upstreams.md) | Registering upstream services, tools (sidecar + lockfile), and prompts |
+| [tasks.md](tasks.md) | Native MCP Tasks (`run_task`), SQLite store, allowlist, and the SEP-1686 flow |
+| [sessions.md](sessions.md) | Registry of admin sessions and recordings (JSON in `sessions_dir`) |
+| [skills.md](skills.md) | YAML skill playbooks exposed through MCP `prompts/list` / `prompts/get` |
+| [clients.md](clients.md) | Cursor over HTTP + OAuth, scripted MCP/HTTP clients, and vmcp-lite for local stdio hosts |
+| [bench.md](bench.md) | Optional Python tool for measuring how LLMs batch `query_graphql` requests |
+| [aggregation.md](aggregation.md) | How GraphQL aggregation works across upstream tools |
+| [mcp-2026-07-28.md](mcp-2026-07-28.md) | Evaluation of the 2026-07-28 spec, session remapping, the `[mcp].latest` flag, and gateway patterns |
 
-- Шаблон конфигурации: [`vmcp.toml`](../vmcp.toml)
-- Docker-стек: [`deploy/bootstrap.sh`](../deploy/bootstrap.sh) + [`docker-compose.yml`](../docker-compose.yml) + [`deploy/Caddyfile`](../deploy/Caddyfile) (image из GHCR / workflow `release`)
-- Демо: [`demo/README.md`](../demo/README.md) + [`demo/vmcp.toml`](../demo/vmcp.toml)
+Quick links from the repository root:
+
+- Configuration template: [`vmcp.toml`](../vmcp.toml)
+- Docker stack: [`deploy/bootstrap.sh`](../deploy/bootstrap.sh) + [`docker-compose.yml`](../docker-compose.yml) + [`deploy/Caddyfile`](../deploy/Caddyfile) (image from GHCR / `release` workflow)
+- Demo: [`demo/README.md`](../demo/README.md) + [`demo/vmcp.toml`](../demo/vmcp.toml)

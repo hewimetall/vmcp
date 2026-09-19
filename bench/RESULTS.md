@@ -1,36 +1,40 @@
-# Benchmark агрегации `query_graphql` — первые результаты
+# `query_graphql` aggregation benchmark — initial results
+
+**Language:** English | [Русский](RESULTS.ru.md)
 
 ## TL;DR
 
-Переписывание описания инструмента `query_graphql` в стиле "RULE #1 — BATCH EVERYTHING INTO ONE CALL"
-(commit `1795ce7`) поднимает **single-shot rate с 4% до 85%** на каноническом
-наборе demo tasks и вдвое снижает среднее число tokens на задачу (после фильтрации
-ошибочных runs). На **1400 runs** (700 в каждом arm, 7 tasks × 100 replicas)
-тренд однозначен: явное batching guidance меняет поведение LLM с turn-cap loop
-на one-shot aliased document.
+Rewriting the `query_graphql` tool description in a
+"RULE #1 — BATCH EVERYTHING INTO ONE CALL" style (commit `1795ce7`) raises the
+**single-shot rate from 4% to 85%** on the canonical demo task set and halves
+the average number of tokens per task after failed runs are filtered out.
+Across **1,400 runs** (700 per arm, 7 tasks × 100 replicas), the trend is clear:
+explicit batching guidance shifts the LLM from a turn-cap loop to a one-shot
+aliased document.
 
-## Настройка
+## Setup
 
-- **Harness**: `vmcp/bench/run.py`, async OpenAI-compatible client
-  (`model=developer` на момент запуска). Mock results для `query_graphql`
-  inline через `mock_tool.py` — без MCP server и живых upstream.
+- **Harness**: `vmcp/bench/run.py`, an asynchronous OpenAI-compatible client
+  (`model=developer` at the time of the run). `mock_tool.py` supplies
+  `query_graphql` results inline, with no MCP server or live upstreams.
 - **Concurrency**: 20.  **Temperature**: 0.7.  **Turn cap**: 8.
-- **Tasks**: 7 multi-fact prompts (`tasks/tasks.jsonl`), по 100 replicas.
-  Спроектированы так, чтобы хорошо сбатченный ответ помещался в один aliased GraphQL document.
-- **Метрика**: число вызовов инструмента `query_graphql` на run (меньше
-  = лучше агрегация) и total prompt+completion tokens.
+- **Tasks**: 7 multi-fact prompts (`tasks/tasks.jsonl`), with 100 replicas each.
+  They are designed so that a properly batched answer fits in one aliased
+  GraphQL document.
+- **Metric**: the number of `query_graphql` tool calls per run (fewer calls
+  means better aggregation) and total prompt plus completion tokens.
 
-## Два сравниваемых описания
+## The two descriptions compared
 
-| Tag             | File                            | Что говорит                                                          |
-|-----------------|---------------------------------|------------------------------------------------------------------------|
-| `A_current`     | `descriptions/A_current.txt`    | Полное описание commit-`1795ce7`, "RULE #1 BATCH" + anti-pattern.    |
-| `C_noguidance`  | `descriptions/C_noguidance.txt` | 3-line bare schema, без batching hint — control arm.               |
+| Tag             | File                            | Description |
+|-----------------|---------------------------------|-------------|
+| `A_current`     | `descriptions/A_current.txt`    | Full description from commit `1795ce7`, with "RULE #1 BATCH" and an anti-pattern. |
+| `C_noguidance`  | `descriptions/C_noguidance.txt` | Three-line bare schema with no batching hint; the control arm. |
 
-`A_current.txt` извлечён дословно из
-`crates/vmcp-server/src/lib.rs:106-179` через `_extract_desc.py`.
+`A_current.txt` was extracted verbatim from
+`crates/vmcp-server/src/lib.rs:106-179` by `_extract_desc.py`.
 
-## Главные числа (errors / truncated runs отфильтрованы)
+## Key results (errors and truncated runs excluded)
 
 | task_id                       | A: calls μ | A: %single | A: tokens | C: calls μ | C: %single | C: tokens | Δ calls |
 |-------------------------------|-----------:|-----------:|----------:|-----------:|-----------:|----------:|--------:|
@@ -43,48 +47,50 @@
 | world_clock_table             |       1.00 |       100% |     3 482 |       5.80 |         0% |     5 458 |   +4.80 |
 | **OVERALL**                   |   **1.23** |    **85%** |     4 172 |       3.55 |        39% |     3 364 |  +2.32 |
 
-Filter:  `error is None and not truncated`.  Surviving rows: A 606/700,
-C 67/700.  В C **341 из 700** runs достиг `--turn-cap 8`, а **292 из 700**
-истекли по timeout — оба симптома одной проблемы: без guidance LLM делает
-много последовательных tool calls.
+Filter: `error is None and not truncated`. Surviving rows: A 606/700,
+C 67/700. In C, **341 of 700** runs reached `--turn-cap 8`, while **292 of 700**
+timed out. Both are symptoms of the same problem: without guidance, the LLM
+makes many sequential tool calls.
 
-## Сырое распределение (контрольная группа C, все 700 runs, включая failures)
+## Raw distribution (control group C, all 700 runs including failures)
 
 ```
 0 calls (timeout):   275
-1 call (single-shot): 29  ← только 4% runs
-8 calls (turn-cap):  242  ← 35% упёрлись в cap
+1 call (single-shot): 29  ← only 4% of runs
+8 calls (turn-cap):  242  ← 35% hit the cap
 9-22 calls:           67
 other (2-7):          87
 ```
 
-## Интерпретация
+## Interpretation
 
-1. **Новое описание работает для "additive" multi-fact tasks**: каждая задача,
-   где под-вопросы неоднородны (разные upstream, разные timezones, разные SQL),
-   переходит с 0-22% single-shot в C до **100% single-shot** в A. World clocks,
-   orders+employees, demo summary — все переключаются чисто.
+1. **The new description works for "additive" multi-fact tasks**: every task
+   with heterogeneous subquestions (different upstreams, time zones, or SQL)
+   moves from a 0–22% single-shot rate in C to a **100% single-shot rate** in A.
+   World clocks, orders plus employees, and the demo summary all switch cleanly.
 
-2. **`customer_country_breakdown` — остаточный failure mode в A**
-   (14% single-shot, 4.29 mean calls). LLM правильно делает GROUP BY query
-   в call #1, затем часто осознаёт, что пользователь также просил
-   *totals*, и выпускает второй postgres alias в call #2 вместо batching
-   `by_country` + `totals` на уровне postgres. Это targeted gap для следующей
-   ревизии описания (`A_v2`, draft в `descriptions/A_v2.txt` — добавляет явные
-   anti-patterns "breakdown + totals = one call, two aliases at the postgres level"
-   и "per-category loops are a bug, use GROUP BY").
+2. **`customer_country_breakdown` remains a failure mode in A**
+   (14% single-shot, 4.29 mean calls). The LLM correctly issues a GROUP BY
+   query in call #1, but then often realizes that the user also requested
+   *totals* and issues a second Postgres alias in call #2 instead of batching
+   `by_country` and `totals` at the Postgres level. This is the targeted gap for
+   the next description revision: the `A_v2` draft in
+   `descriptions/A_v2.txt` adds the explicit anti-patterns "breakdown + totals
+   = one call, two aliases at the postgres level" and "per-category loops are
+   a bug, use GROUP BY".
 
-3. **Среднее tokens в C ниже, чем в A, потому что failed runs стоят 0 tokens.**
-   Среди завершённых runs (n=67 для C) token mean в C сопоставим с A или выше —
-   wall-time penalty нескольких turns доминирует.
+3. **The mean token count in C is lower than in A because failed runs record
+   zero tokens.** Among completed runs (n=67 for C), C's mean token count is
+   comparable to or higher than A's; the wall-time cost of multiple turns
+   dominates.
 
-4. **Ни одно описание не было tuned to the mock**. Mock (`mock_tool.py`)
-   обрабатывает aliased + bare top-level queries к `postgres` / `time`,
-   распознаёт multi-subquery SELECT и UNION ALL patterns. Всё нераспознанное
-   возвращает `[{"note":"mock", "sql": ...}]` — non-error, поэтому harness
-   никогда не заставляет LLM retry.
+4. **Neither description was tuned to the mock.** The mock (`mock_tool.py`)
+   handles aliased and bare top-level queries to `postgres` and `time`, and
+   recognizes multi-subquery SELECT and UNION ALL patterns. Anything
+   unrecognized returns `[{"note":"mock", "sql": ...}]`, which is not an
+   error, so the harness never forces the LLM to retry.
 
-## Как воспроизвести
+## Reproduce the results
 
 ```bash
 cd bench
@@ -105,17 +111,18 @@ uv run python analyze.py results/A_current.jsonl results/C_noguidance.jsonl
 python3 _summary.py
 ```
 
-## Ожидает запуска
+## Awaiting a run
 
-- **`A_v2`** (draft в `descriptions/A_v2.txt`) — добавляет два новых anti-patterns,
-  направленных на failure mode `customer_country_breakdown`. **Ещё не прогонялся**
-  до конца: LLM endpoint упал посреди batch (`HTTP 000` connection
-  refusal, persistent) после ~50 replicas на task. Harness уже обновлён,
-  чтобы retry `APIConnectionError` / `InternalServerError` с 5 attempts +
-  exp backoff до 30s и применять 90s per-request timeout. Перезапустите,
-  когда endpoint вернётся.
+- **`A_v2`** (draft in `descriptions/A_v2.txt`) adds two new anti-patterns
+  targeting the `customer_country_breakdown` failure mode. **The run has not
+  completed yet**: the LLM endpoint went down partway through the batch with a
+  persistent `HTTP 000` connection refusal after approximately 50 replicas per
+  task. The harness has been updated to retry `APIConnectionError` and
+  `InternalServerError` up to 5 times, with exponential backoff capped at 30
+  seconds and a 90-second per-request timeout. Rerun it when the endpoint is
+  available again.
 
-## Происхождение
+## Provenance
 
 - Date: 2026-05-30
 - Tool description under test: `crates/vmcp-server/src/lib.rs:106-179` at
@@ -125,26 +132,30 @@ python3 _summary.py
 - Total LLM-side tool calls measured: ~1500 (A) + ~3400 (C).
 - Raw data: `results/A_current.jsonl`, `results/C_noguidance.jsonl`.
 
-## Обновление — описание `A_v2` поставлено
+## Update — the `A_v2` description has shipped
 
-На основе остаточного failure mode `customer_country_breakdown` в A описание
-инструмента в `crates/vmcp-server/src/lib.rs` обновлено до содержимого **`A_v2`**
-(`descriptions/A_v2.txt`, теперь также mirrored в `descriptions/HEAD.txt`). Два новых
-раздела нацелены на breakdown-splitting behaviour, наблюдавшееся в bench:
+Based on the remaining `customer_country_breakdown` failure mode in A, the tool
+description in `crates/vmcp-server/src/lib.rs` has been updated to match
+**`A_v2`** (`descriptions/A_v2.txt`, now also mirrored in
+`descriptions/HEAD.txt`). Two new sections target the breakdown-splitting
+behavior observed in the benchmark:
 
-- **RULE #1B — BREAKDOWN + TOTALS = ONE CALL, ALWAYS TWO ALIASES** — явный
-  anti-pattern + correct pattern для формы "count per X, plus the total",
-  из-за которой LLM разделяла breakdown и totals на два calls.
-- **RULE #1C — PER-CATEGORY LOOPS ARE A BUG. USE GROUP BY** — покрывает
-  связанную ошибку итерации по категориям вместо одного GROUP BY.
+- **RULE #1B — BREAKDOWN + TOTALS = ONE CALL, ALWAYS TWO ALIASES** — an
+  explicit anti-pattern and correct pattern for requests of the form "count per
+  X, plus the total," which caused the LLM to split the breakdown and totals
+  across two calls.
+- **RULE #1C — PER-CATEGORY LOOPS ARE A BUG. USE GROUP BY** — covers the
+  related mistake of iterating over categories instead of using one GROUP BY.
 
-Rust string literal также переключён с escaped-with-line-continuation
-(`"\<LF>line\n\<LF>"`) на raw string (`r#"..."#`), чтобы source оставался
-удобным для diff как plain text. `_extract_desc.py` поддерживает обе формы.
+The Rust string literal was also changed from an escaped string with line
+continuations (`"\<LF>line\n\<LF>"`) to a raw string (`r#"..."#`) so the source
+remains plain text and easy to review in diffs. `_extract_desc.py` supports
+both forms.
 
-**A_v2 ещё не re-benchmarked** — LLM endpoint упал посреди batch
-(`HTTP 000` connection refusal) после ~50 replicas на task в A_v2 run.
-Harness уже обновлён для retry `APIConnectionError`/`InternalServerError`
-с 5 attempts + 90s per-request timeout. Перезапустите, когда endpoint вернётся,
-чтобы проверить, действительно ли новые rules поднимают `customer_country_breakdown`
-с 14% single-shot к 92%, которых canonical `demo_summary` достигает в A.
+**A_v2 has not yet been re-benchmarked**: the LLM endpoint went down partway
+through the A_v2 batch with an `HTTP 000` connection refusal after approximately
+50 replicas per task. The harness now retries `APIConnectionError` and
+`InternalServerError` up to 5 times and applies a 90-second per-request timeout.
+Rerun the benchmark when the endpoint is available to determine whether the
+new rules raise `customer_country_breakdown` from a 14% single-shot rate toward
+the 92% that the canonical `demo_summary` achieves in A.

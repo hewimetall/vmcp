@@ -64,4 +64,33 @@ mod tests {
             "latest=true stays dual-era and still lists 2025-11-25, got {versions:?}"
         );
     }
+
+    #[test]
+    fn latest_on_is_full_known_set() {
+        let versions = advertised_protocol_versions(true);
+        assert_eq!(
+            versions.as_ref(),
+            ProtocolVersion::KNOWN_VERSIONS,
+            "latest=true must advertise every rmcp-known revision"
+        );
+    }
+
+    #[test]
+    fn latest_off_keeps_every_pre_2026_known_revision() {
+        let versions = advertised_protocol_versions(false);
+        let expected: Vec<_> = ProtocolVersion::KNOWN_VERSIONS
+            .iter()
+            .filter(|v| v.as_str() < ProtocolVersion::V_2026_07_28.as_str())
+            .cloned()
+            .collect();
+        assert_eq!(
+            versions.as_ref(),
+            expected.as_slice(),
+            "latest=false must keep the full legacy known set"
+        );
+        assert!(
+            !versions.is_empty(),
+            "legacy advertisement must not be empty"
+        );
+    }
 }

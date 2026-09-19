@@ -1118,6 +1118,24 @@ token_ttl_secs = 3600
     }
 
     #[test]
+    fn mcp_latest_explicit_false() {
+        let tmp = write_tmp(
+            r#"
+[mcp]
+latest = false
+
+[auth]
+master_password_argon2 = "$argon2id$v=19$m=19456,t=2,p=1$YWFhYWFhYWFhYWFhYWFhYQ$dG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4tdG9rZW4"
+jwt_kid = "k1"
+jwks_rotate_secs = 86400
+token_ttl_secs = 3600
+"#,
+        );
+        let s = load(Some(&tmp.0)).expect("loads");
+        assert!(!s.mcp.latest);
+    }
+
+    #[test]
     fn mcp_latest_reads_override() {
         let tmp = write_tmp(
             r#"

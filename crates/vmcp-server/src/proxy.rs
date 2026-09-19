@@ -208,6 +208,43 @@ fn build_description(
     })
 }
 
+#[cfg(test)]
+mod latest_tests {
+    use rmcp::handler::server::ServerHandler;
+    use vmcp_notify::Bus;
+
+    use super::*;
+    use crate::advertised_protocol_versions;
+
+    #[test]
+    fn new_defaults_to_legacy_advertisement() {
+        let pool = Arc::new(UpstreamPool::empty_for_test(Bus::new(8)));
+        let server = ProxyServer::new(pool);
+        assert_eq!(
+            server.supported_protocol_versions().as_ref(),
+            advertised_protocol_versions(false).as_ref()
+        );
+        assert!(server
+            .supported_protocol_versions()
+            .iter()
+            .all(|v| v.as_str() < ProtocolVersion::V_2026_07_28.as_str()));
+    }
+
+    #[test]
+    fn with_latest_is_dual_era() {
+        let pool = Arc::new(UpstreamPool::empty_for_test(Bus::new(8)));
+        let server = ProxyServer::with_latest(pool, true);
+        assert_eq!(
+            server.supported_protocol_versions().as_ref(),
+            advertised_protocol_versions(true).as_ref()
+        );
+        assert!(server
+            .supported_protocol_versions()
+            .iter()
+            .any(|v| v.as_str() == ProtocolVersion::V_2026_07_28.as_str()));
+    }
+}
+
 fn into_schema_arc(name: &str, raw: &Value) -> Arc<JsonObject> {
     match raw.as_object() {
         Some(obj) => Arc::new(obj.clone()),

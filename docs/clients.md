@@ -19,6 +19,7 @@ If OAuth fails immediately, check that:
 
 ---
 
+<a id="local-stdio-host--vmcp-lite"></a>
 ## Local stdio host → vmcp-lite
 
 vmcp is an HTTP-only gateway. For local MCP hosts that communicate through stdin/stdout, such as Claude Desktop or a Cursor pipe, use the separate **[vmcp-lite](https://github.com/hewimetall/vmcp-lite)** project, which accepts input only through stdio.
@@ -64,6 +65,7 @@ See the Bash example in [authentication.md](authentication.md#scripted-smoke-tes
 
 ---
 
+<a id="admin-ui"></a>
 ## Admin dashboard
 
 `https://<domain>/admin` uses **HTTP Basic** authentication. The username can be any value, and the password is the master password in plain text. This is not a Bearer JWT or the `vmcp_…` token used on `/mcp`.

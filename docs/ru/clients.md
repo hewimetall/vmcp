@@ -19,6 +19,7 @@
 
 ---
 
+<a id="локальный-stdio-host--vmcp-lite"></a>
 ## Локальный stdio-хост → vmcp-lite
 
 vmcp — это только HTTP-gateway. Для локальных MCP-хостов, которые общаются через stdin/stdout (Claude Desktop, Cursor pipe), есть отдельный проект **[vmcp-lite](https://github.com/hewimetall/vmcp-lite)** — вход только через stdio.

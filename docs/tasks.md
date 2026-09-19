@@ -162,6 +162,7 @@ query_graphql.
 
 ---
 
+<a id="tests--coverage"></a>
 ## Tests and coverage
 
 | Check | Command / file |

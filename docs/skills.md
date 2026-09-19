@@ -104,6 +104,7 @@ When the proxy is disabled, as it is by default in an empty configuration, local
 
 ---
 
+<a id="tests--coverage"></a>
 ## Tests and coverage
 
 The llvm-cov coverage gate for `vmcp-server` includes `skills.rs`, `prompt_catalog.rs`, `prompt_proxy.rs` (helpers), and `graphql_inject.rs`, along with `sessions.rs` and `tasks.rs`. The threshold is **96% line coverage**.

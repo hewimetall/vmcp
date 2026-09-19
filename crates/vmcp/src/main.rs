@@ -686,7 +686,8 @@ async fn serve_http(
     }
 
     if cfg.proxy.enabled {
-        let proxy_server = ProxyServer::with_latest(pool.clone(), cfg.mcp.latest);
+        let proxy_server =
+            ProxyServer::with_latest_and_gcf(pool.clone(), cfg.mcp.latest, cfg.proxy.gcf);
         let proxy_rmcp_config =
             StreamableHttpServerConfig::default().with_allowed_hosts(allowed_hosts.clone());
         let proxy_rmcp_service = StreamableHttpService::new(

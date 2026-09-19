@@ -82,6 +82,8 @@ enabled = false
 | `auth.master_password_argon2` | `VMCP_AUTH__MASTER_PASSWORD_ARGON2` |
 | `upstream.spawn_timeout_ms` | `VMCP_UPSTREAM__SPAWN_TIMEOUT_MS` |
 | `auth.enabled` | `VMCP_AUTH__ENABLED` |
+| `gql.gcf` | `VMCP_GQL__GCF` |
+| `proxy.gcf` | `VMCP_PROXY__GCF` |
 
 Итоговый конфиг: `vmcp print-config`.
 
@@ -154,6 +156,28 @@ Env: `VMCP_MCP__LATEST=true`.
 `initialize` не обещают 2026. `latest = true` — dual-era (legacy + latest),
 не modern-only. Подробности и ограничения (listen, recorder sid):
 [mcp-2026-07-28.md](mcp-2026-07-28.md).
+
+---
+
+## GCF output (опционально, два флага)
+
+[GCF](https://gcformat.com/) generic profile вместо JSON в MCP tool text. Флаги **независимые**, оба off by default. Энкодер отклонил значение (integer вне i64) → откат на JSON.
+
+| Флаг | Env | Где |
+| ---- | --- | --- |
+| `[gql].gcf` | `VMCP_GQL__GCF` | `/mcp` `query_graphql` envelope |
+| `[proxy].gcf` | `VMCP_PROXY__GCF` | `/mcp-proxy` `{server}__{tool}` results |
+
+```toml
+[gql]
+gcf = true          # только GraphQL /mcp
+
+[proxy]
+enabled = true
+gcf = true          # только /mcp-proxy; не требует [gql].gcf
+```
+
+`/mcp-proxy`: JSON text или `structuredContent` → GCF; plain-text ошибки не трогаем. Когда флаг включён, `tools/list` и server instructions говорят, что ответ — GCF.
 
 ---
 

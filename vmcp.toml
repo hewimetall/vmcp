@@ -22,6 +22,9 @@ notif_ring_max = 10000
 [gql]
 max_depth      = 10
 max_complexity = 1000
+# Encode query_graphql tool text as GCF (https://gcformat.com/) instead of JSON.
+# Off by default. Agents read GCF natively; typically 50–70% fewer tokens.
+# gcf = true
 
 [upstream]
 # Cold uvx/npx first spawn can exceed 30s — keep both keys here (do not set
@@ -84,6 +87,8 @@ gc_interval_secs = 30
 [proxy]
 enabled  = true
 mcp_path = "/mcp-proxy"
+# Encode /mcp-proxy tool results as GCF (https://gcformat.com/). Independent of [gql].gcf.
+# gcf = true
 
 # Advertise MCP 2026-07-28 (latest) in server/discover + initialize, alongside
 # the legacy era through 2025-11-25. Off by default — do not enable until the

@@ -120,11 +120,22 @@ pub async fn boot(cfg: Settings) -> Result<BootContext> {
         info!("MCP latest off — advertising legacy revisions through 2025-11-25");
     }
 
-    let vmcp_server = VmcpServer::with_tasks_latest(
+    let vmcp_server = VmcpServer::with_tasks_and_schema(
         schema_swap.clone(),
         pool.clone(),
         skills.clone(),
         task_runner,
+        SchemaLimits {
+            max_depth: cfg.gql.max_depth,
+            max_complexity: cfg.gql.max_complexity,
+            max_response_bytes: cfg.gql.max_response_bytes,
+            response_cap_mode: match cfg.gql.response_cap_mode {
+                CapMode::Error => GqlCapMode::Error,
+                CapMode::Truncate => GqlCapMode::Truncate,
+            },
+        },
+        cfg.proxy.enabled,
+        cfg.gql.gcf,
         cfg.mcp.latest,
     );
 

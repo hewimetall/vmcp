@@ -12,7 +12,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_graphql::dynamic::{
-    Field, FieldFuture, FieldValue, InputValue, Object, Scalar, Schema, TypeRef,
+    Field, FieldFuture, FieldValue, InputValue, Object, ResolverContext, Scalar, Schema, TypeRef,
 };
 use async_graphql::{Name, Value as GqlValue};
 use serde_json::{Map, Value};
@@ -20,6 +20,14 @@ use serde_json::{Map, Value};
 use vmcp_upstream::{ResolvedTool, UpstreamPool};
 
 pub mod validation;
+
+/// Discovery surfaces honor the same `upstream:` whitelist as tool calls (G25).
+/// Missing policy (auth off) → full catalogue.
+fn catalog_allows(ctx: &ResolverContext<'_>, server: &str) -> bool {
+    ctx.data_opt::<vmcp_auth::ScopePolicy>()
+        .map(|p| p.catalog_allows_upstream(server))
+        .unwrap_or(true)
+}
 
 /// One prompt argument advertised in GraphQL skill discovery.
 #[derive(Debug, Clone)]
@@ -342,12 +350,19 @@ pub fn build_schema_with_prompts(
         query = query.field(Field::new(
             "servers",
             TypeRef::named_nn_list_nn("Server"),
-            move |_ctx| {
+            move |ctx| {
                 let pool = pool_s.clone();
+                let policy = ctx.data_opt::<vmcp_auth::ScopePolicy>().cloned();
                 FieldFuture::new(async move {
                     let mut nodes: Vec<ServerNode> = pool
                         .all_resolved()
                         .into_iter()
+                        .filter(|(name, _)| {
+                            policy
+                                .as_ref()
+                                .map(|p| p.catalog_allows_upstream(name))
+                                .unwrap_or(true)
+                        })
                         .map(|(name, tools)| {
                             let read_only_count =
                                 tools.iter().filter(|t| t.read_only).count() as i64;
@@ -379,6 +394,7 @@ pub fn build_schema_with_prompts(
                 TypeRef::named_nn_list_nn("SearchHit"),
                 move |ctx| {
                     let pool = pool_s.clone();
+                    let policy = ctx.data_opt::<vmcp_auth::ScopePolicy>().cloned();
                     FieldFuture::new(async move {
                         let q = ctx.args.try_get("q")?.string()?.to_lowercase();
                         let tokens: Vec<&str> = q.split_whitespace().collect();
@@ -387,6 +403,11 @@ pub fn build_schema_with_prompts(
                         }
                         let mut hits: Vec<(usize, SearchHitNode)> = Vec::new();
                         for (server, tools) in pool.all_resolved() {
+                            if let Some(p) = &policy {
+                                if !p.catalog_allows_upstream(&server) {
+                                    continue;
+                                }
+                            }
                             for t in tools {
                                 let hay = format!(
                                     "{} {}",
@@ -434,6 +455,7 @@ pub fn build_schema_with_prompts(
                 TypeRef::named_nn_list_nn("Notification"),
                 move |ctx| {
                     let pool = pool_n.clone();
+                    let policy = ctx.data_opt::<vmcp_auth::ScopePolicy>().cloned();
                     FieldFuture::new(async move {
                         let since = ctx
                             .args
@@ -451,6 +473,12 @@ pub fn build_schema_with_prompts(
                         let notifs = bus.replay_since(since, limit);
                         let nodes: Vec<FieldValue> = notifs
                             .into_iter()
+                            .filter(|n| {
+                                policy
+                                    .as_ref()
+                                    .map(|p| p.catalog_allows_upstream(&n.source))
+                                    .unwrap_or(true)
+                            })
                             .map(|n| {
                                 FieldValue::owned_any(NotificationNode {
                                     id: n.id,
@@ -622,11 +650,15 @@ pub fn build_schema_with_prompts(
         query = query.field(Field::new(
             "prompts",
             TypeRef::named_nn_list_nn("Prompt"),
-            move |_ctx| {
+            move |ctx| {
                 let list_h = list_h.clone();
+                let policy = ctx.data_opt::<vmcp_auth::ScopePolicy>().cloned();
                 FieldFuture::new(async move {
-                    let nodes: Vec<PromptNode> =
-                        list_h().into_iter().map(prompt_meta_to_node).collect();
+                    let nodes: Vec<PromptNode> = list_h()
+                        .into_iter()
+                        .filter(|meta| prompt_catalog_visible(meta, policy.as_ref()))
+                        .map(prompt_meta_to_node)
+                        .collect();
                     Ok(Some(FieldValue::list(
                         nodes.into_iter().map(FieldValue::owned_any),
                     )))
@@ -641,6 +673,7 @@ pub fn build_schema_with_prompts(
                 TypeRef::named_nn_list_nn("Prompt"),
                 move |ctx| {
                     let list_h = list_h.clone();
+                    let policy = ctx.data_opt::<vmcp_auth::ScopePolicy>().cloned();
                     FieldFuture::new(async move {
                         let q = ctx.args.try_get("q")?.string()?.to_lowercase();
                         let tokens: Vec<&str> = q.split_whitespace().collect();
@@ -649,6 +682,9 @@ pub fn build_schema_with_prompts(
                         }
                         let mut scored: Vec<(usize, PromptNode)> = Vec::new();
                         for meta in list_h() {
+                            if !prompt_catalog_visible(&meta, policy.as_ref()) {
+                                continue;
+                            }
                             let hay = format!("{} {}", meta.name, meta.description).to_lowercase();
                             let hits = tokens.iter().filter(|t| hay.contains(**t)).count();
                             if hits > 0 {
@@ -672,8 +708,18 @@ pub fn build_schema_with_prompts(
                 TypeRef::named_nn("PromptContent"),
                 move |ctx| {
                     let get_h = get_h.clone();
+                    let policy = ctx.data_opt::<vmcp_auth::ScopePolicy>().cloned();
                     FieldFuture::new(async move {
                         let name = ctx.args.try_get("name")?.string()?.to_string();
+                        if let Some((server, _)) = name.split_once("__") {
+                            if let Some(p) = &policy {
+                                if !p.catalog_allows_upstream(server) {
+                                    return Err(async_graphql::Error::new(format!(
+                                        "unknown prompt: {name}"
+                                    )));
+                                }
+                            }
+                        }
                         let args = match ctx.args.try_get("arguments") {
                             Ok(v) => {
                                 let gql = v.deserialize::<GqlValue>()?;
@@ -729,11 +775,7 @@ pub fn build_schema_with_prompts(
             let type_name = format!("{}Read", pascal_case(&server));
             builder = builder.register(obj);
             let field_name = camel_case(&server);
-            query = query.field(Field::new(
-                field_name,
-                TypeRef::named_nn(type_name),
-                |_ctx| FieldFuture::new(async { Ok(Some(FieldValue::owned_any(NamespaceMarker))) }),
-            ));
+            query = query.field(namespace_root_field(field_name, type_name, server.clone()));
         }
 
         if !writes.is_empty() {
@@ -748,11 +790,7 @@ pub fn build_schema_with_prompts(
             let type_name = format!("{}Write", pascal_case(&server));
             builder = builder.register(obj);
             let field_name = camel_case(&server);
-            mutation = mutation.field(Field::new(
-                field_name,
-                TypeRef::named_nn(type_name),
-                |_ctx| FieldFuture::new(async { Ok(Some(FieldValue::owned_any(NamespaceMarker))) }),
-            ));
+            mutation = mutation.field(namespace_root_field(field_name, type_name, server.clone()));
             had_mutation_ns = true;
         }
     }
@@ -771,6 +809,32 @@ pub fn build_schema_with_prompts(
 
 /// Marker for namespace fields whose children resolve themselves.
 struct NamespaceMarker;
+
+fn namespace_root_field(field_name: String, type_name: String, server: String) -> Field {
+    Field::new(
+        field_name.clone(),
+        TypeRef::named_nn(type_name),
+        move |ctx| {
+            let hidden = !catalog_allows(&ctx, &server);
+            let fname = field_name.clone();
+            FieldFuture::new(async move {
+                if hidden {
+                    return Err(async_graphql::Error::new(format!(
+                        "Unknown field \"{fname}\""
+                    )));
+                }
+                Ok(Some(FieldValue::owned_any(NamespaceMarker)))
+            })
+        },
+    )
+}
+
+fn prompt_catalog_visible(meta: &PromptMeta, policy: Option<&vmcp_auth::ScopePolicy>) -> bool {
+    match &meta.server {
+        None => true,
+        Some(s) => policy.map(|p| p.catalog_allows_upstream(s)).unwrap_or(true),
+    }
+}
 
 #[derive(Debug, Clone)]
 struct ToolCallNode {
@@ -1542,5 +1606,136 @@ mod tests {
         assert!(node.text.is_some());
         // `structured()` duplicates value into text as a JSON string — parse it.
         assert_eq!(node.json["slide"], json!(2));
+    }
+
+    fn ro_tool(server: &str, name: &str) -> ResolvedTool {
+        ResolvedTool {
+            server: server.into(),
+            name: name.into(),
+            description: Some(format!("{server} {name}")),
+            input_schema: json!({"type": "object"}),
+            read_only: true,
+            task_support: vmcp_registry::TaskSupportHint::Forbidden,
+        }
+    }
+
+    fn catalog_pool() -> std::sync::Arc<UpstreamPool> {
+        let bus = vmcp_notify::Bus::new(16);
+        let pool = std::sync::Arc::new(UpstreamPool::empty_for_test(bus));
+        pool.insert_synthetic_for_test(
+            "alpha",
+            Some("tenant A".into()),
+            vec![ro_tool("alpha", "ping")],
+        );
+        pool.insert_synthetic_for_test(
+            "beta",
+            Some("tenant B".into()),
+            vec![ro_tool("beta", "ping")],
+        );
+        pool
+    }
+
+    fn server_names(resp: &async_graphql::Response) -> Vec<String> {
+        resp.data
+            .clone()
+            .into_json()
+            .ok()
+            .and_then(|v| v["servers"].as_array().cloned())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|s| s["name"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn servers_and_search_honor_upstream_whitelist() {
+        use async_graphql::Request;
+
+        let pool = catalog_pool();
+        let schema = build_schema(pool.all_resolved(), pool.clone(), SchemaLimits::default())
+            .expect("schema");
+        let policy = vmcp_auth::ScopePolicy::parse("mcp:use upstream:alpha");
+
+        let servers = schema
+            .execute(Request::new("{ servers { name } }").data(policy.clone()))
+            .await;
+        assert!(servers.errors.is_empty(), "{:?}", servers.errors);
+        let names = server_names(&servers);
+        assert_eq!(names, vec!["alpha".to_string()]);
+
+        let search = schema
+            .execute(Request::new("{ search(q: \"ping\") { server tool } }").data(policy.clone()))
+            .await;
+        assert!(search.errors.is_empty(), "{:?}", search.errors);
+        let hits = search.data.clone().into_json().unwrap()["search"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0]["server"], json!("alpha"));
+
+        let hidden = schema
+            .execute(Request::new("{ beta { ping { isError } } }").data(policy))
+            .await;
+        assert!(
+            !hidden.errors.is_empty()
+                || hidden
+                    .data
+                    .clone()
+                    .into_json()
+                    .ok()
+                    .and_then(|v| v.get("beta").cloned())
+                    .is_none(),
+            "beta namespace must not resolve: {:?}",
+            hidden
+        );
+    }
+
+    #[tokio::test]
+    async fn admin_and_unscoped_see_full_catalog() {
+        use async_graphql::Request;
+
+        let pool = catalog_pool();
+        let schema = build_schema(pool.all_resolved(), pool.clone(), SchemaLimits::default())
+            .expect("schema");
+
+        for scope in ["mcp:admin", "mcp:use", "mcp:admin upstream:alpha"] {
+            let policy = vmcp_auth::ScopePolicy::parse(scope);
+            let servers = schema
+                .execute(Request::new("{ servers { name } }").data(policy))
+                .await;
+            let mut names = server_names(&servers);
+            names.sort();
+            assert_eq!(
+                names,
+                vec!["alpha".to_string(), "beta".to_string()],
+                "{scope}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn filtered_entries_omit_foreign_namespace_from_introspection() {
+        use async_graphql::Request;
+
+        let pool = catalog_pool();
+        let entries: Vec<_> = pool
+            .all_resolved()
+            .into_iter()
+            .filter(|(n, _)| n == "alpha")
+            .collect();
+        let schema = build_schema(entries, pool, SchemaLimits::default()).expect("schema");
+        let resp = schema
+            .execute(Request::new(
+                r#"{ __type(name: "Query") { fields { name } } }"#,
+            ))
+            .await;
+        let fields = resp.data.clone().into_json().unwrap()["__type"]["fields"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let names: Vec<&str> = fields.iter().filter_map(|f| f["name"].as_str()).collect();
+        assert!(names.contains(&"alpha"), "{names:?}");
+        assert!(!names.contains(&"beta"), "{names:?}");
     }
 }

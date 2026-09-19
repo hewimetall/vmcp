@@ -11,6 +11,7 @@ MCP gateway на Rust. Собирает несколько upstream MCP-серв
 - **Tasks (опционально)** — long-running tools как durable tasks на SQLite.
 - **OAuth 2.1 + PKCE + DCR** — или static bearer tokens.
 - **Hot-reload** — токены, `registry.json` и промпты обновляются без рестарта.
+- **GCF output (опционально)** — `[gql].gcf` для `query_graphql` (`/mcp`), `[proxy].gcf` для `/mcp-proxy`. [GCF](https://gcformat.com/) вместо JSON.
 - **`/api/v1`** — operator Token CRUD + upstreams reload (Bearer `mcp:admin`).
 
 ## Старт

@@ -36,9 +36,18 @@ pub(crate) fn normalize_prompt_args(
 }
 
 /// Build the prefixed MCP prompt catalogue from the pool snapshot.
-pub(crate) fn catalogue_from_pool(pool: &UpstreamPool) -> Vec<Prompt> {
+/// `policy` hides upstreams the caller cannot see (G25); `None` lists all.
+pub(crate) fn catalogue_from_pool_filtered(
+    pool: &UpstreamPool,
+    policy: Option<&vmcp_auth::ScopePolicy>,
+) -> Vec<Prompt> {
     let mut prompts: Vec<Prompt> = Vec::new();
     for (server, list) in pool.all_prompts() {
+        if let Some(p) = policy {
+            if !p.catalog_allows_upstream(&server) {
+                continue;
+            }
+        }
         for p in list {
             prompts.push(prompt_from_resolved(&server, &p));
         }
@@ -146,7 +155,7 @@ mod tests {
                 }],
             }],
         );
-        let listed = catalogue_from_pool(&pool);
+        let listed = catalogue_from_pool_filtered(&pool, None);
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].name, "demo__greet");
         let args = listed[0].arguments.as_ref().unwrap();
@@ -157,6 +166,38 @@ mod tests {
             .as_deref()
             .unwrap_or("")
             .contains("[demo]"));
+    }
+
+    #[test]
+    fn catalogue_filtered_hides_foreign_upstreams() {
+        let bus = Bus::new(64);
+        let pool = UpstreamPool::empty_for_test(bus);
+        pool.insert_synthetic_prompts_for_test(
+            "alpha",
+            None,
+            vec![],
+            vec![ResolvedPrompt {
+                server: "alpha".into(),
+                name: "a".into(),
+                description: None,
+                arguments: vec![],
+            }],
+        );
+        pool.insert_synthetic_prompts_for_test(
+            "beta",
+            None,
+            vec![],
+            vec![ResolvedPrompt {
+                server: "beta".into(),
+                name: "b".into(),
+                description: None,
+                arguments: vec![],
+            }],
+        );
+        let policy = vmcp_auth::ScopePolicy::parse("mcp:use upstream:alpha");
+        let listed = catalogue_from_pool_filtered(&pool, Some(&policy));
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "alpha__a");
     }
 
     #[test]
@@ -212,7 +253,7 @@ mod tests {
                 arguments: vec![],
             }],
         );
-        let listed = catalogue_from_pool(&pool);
+        let listed = catalogue_from_pool_filtered(&pool, None);
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].name, "svc__bare");
         assert!(listed[0].arguments.is_none());

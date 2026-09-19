@@ -92,17 +92,11 @@ pub struct Settings {
 /// `2025-11-25`. Set `latest = true` (or `VMCP_MCP__LATEST=true`) to add
 /// `2026-07-28` to `supportedVersions`. Clients still pick the version per
 /// request; this flag only changes what the gateway advertises and will serve.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct McpProtocolConfig {
     /// Advertise and serve MCP `2026-07-28` in addition to legacy revisions.
     #[serde(default)]
     pub latest: bool,
-}
-
-impl Default for McpProtocolConfig {
-    fn default() -> Self {
-        Self { latest: false }
-    }
 }
 
 /// Native MCP Tasks / `run_task` integration (SEP-1686).
